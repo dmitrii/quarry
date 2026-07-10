@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import sys
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ class Session:
     last: datetime | None          # last timestamp seen in the log
     ai_title: str | None = None    # Claude's auto-generated title
     path: Path | None = None       # the .jsonl log
+    log_bytes: int = 0             # size of the log on disk
     open: bool = False             # currently open in a live `claude` process
     pid: int | None = None         # PID of the live process, when open
     status: str | None = None      # 'busy'/'idle' reported by a live process
@@ -94,8 +96,12 @@ def load_session(path: Path) -> Session | None:
                         hi = ts
     if not saw_any:
         return None
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
     return Session(uuid=path.stem, title=title, cwd=cwd, started=lo, last=hi,
-                   ai_title=ai_title, path=path)
+                   ai_title=ai_title, path=path, log_bytes=size)
 
 
 def live_sessions(root: Path) -> dict[str, dict]:
@@ -326,6 +332,29 @@ def human_tokens(n: int) -> str:
     return str(n)
 
 
+def human_size_short(n: int) -> str:
+    # Compact, column-friendly, `ls -h` style: 1024-based, one decimal below 10.
+    val = float(n)
+    for unit in ("", "K", "M", "G", "T"):
+        if unit == "":
+            if val < 1024:
+                return str(n)
+        elif val < 1024:
+            return (f"{val:.1f}{unit}" if val < 10 else f"{val:.0f}{unit}")
+        val /= 1024
+    return f"{val:.0f}P"
+
+
+# Pluggable notions of a session's "size". Each entry: metric-key -> (detail
+# label, accessor over a Session). Add more here (e.g. tokens, message count)
+# and they become available to the size column, -S sorting, and --size.
+SIZE_METRICS: dict[str, tuple[str, "callable"]] = {
+    "log": ("Log size", lambda s: s.log_bytes),
+}
+DEFAULT_SIZE_METRIC = "log"
+SIZE_COL_W = 6  # right-aligned width of the size column in the long view
+
+
 class Palette:
     def __init__(self, enabled: bool):
         self.on = enabled
@@ -369,6 +398,13 @@ def print_detail(s: Session, stats: dict, pal: Palette, now: datetime,
         row("Process", pal.open(state))
     else:
         row("Process", pal.dim("NOT OPEN"))
+
+    # `claude --resume` is scoped to the current directory's project, so prefix
+    # a `cd` unless we're already in the session's launch directory.
+    cmd = f"claude --resume {s.uuid}"
+    if s.cwd and os.path.normpath(s.cwd) != os.path.normpath(os.getcwd()):
+        cmd = f"cd {shlex.quote(s.cwd)} && {cmd}"
+    row("Resume", pal.dim(cmd))
 
     row("User prompts", str(stats["user_prompts"]))
     row("Agent replies", str(stats["assistant_msgs"]))
@@ -415,9 +451,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-c", dest="by_started", action="store_true",
                    help="sort by session start time (default: last interaction)")
     p.add_argument("-r", dest="reverse", action="store_true",
-                   help="reverse order (oldest first)")
+                   help="reverse order (oldest first, or smallest first with -S)")
     p.add_argument("-t", dest="_t", action="store_true",
                    help="sort by time (default; accepted for ls familiarity)")
+    p.add_argument("-S", dest="by_size", action="store_true",
+                   help="sort by size, largest first")
+    p.add_argument("--size", choices=tuple(SIZE_METRICS), default=DEFAULT_SIZE_METRIC,
+                   help=f"which size to show/sort by (default: {DEFAULT_SIZE_METRIC})")
     p.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                    help="when to colorize output (default: auto)")
     return p
@@ -429,10 +469,16 @@ def main(argv: list[str]) -> int:
     sessions = discover(config_dir())
 
     now = datetime.now(timezone.utc)
-    key = (lambda s: s.started) if args.by_started else (lambda s: s.last)
+    # The timestamp shown in -l is independent of the sort order.
+    time_key = (lambda s: s.started) if args.by_started else (lambda s: s.last)
+    size_of = SIZE_METRICS[args.size][1]
     epoch = datetime.min.replace(tzinfo=timezone.utc)
-    # Newest first by default (like `ls -t`); -r flips it.
-    sessions.sort(key=lambda s: key(s) or epoch, reverse=not args.reverse)
+    if args.by_size:
+        # Largest first (like `ls -S`); -r flips to smallest first.
+        sessions.sort(key=size_of, reverse=not args.reverse)
+    else:
+        # Newest first by default (like `ls -t`); -r flips it.
+        sessions.sort(key=lambda s: time_key(s) or epoch, reverse=not args.reverse)
 
     if args.color == "always":
         color = True
@@ -468,8 +514,10 @@ def main(argv: list[str]) -> int:
             # Leading one-char column, ls -F style: '*' marks a session that is
             # currently open in a live `claude` process.
             mark = pal.open("*") if s.open else " "
-            ts = format_time(key(s), now)
-            print(f"{mark} {pal.dim(ts)}  {pal.dir(dirname(s.cwd))}  {name}")
+            size = human_size_short(size_of(s)).rjust(SIZE_COL_W)
+            ts = format_time(time_key(s), now)
+            print(f"{mark} {pal.dim(size)}  {pal.dim(ts)}  "
+                  f"{pal.dir(dirname(s.cwd))}  {name}")
         else:
             print(name)
     return 0
