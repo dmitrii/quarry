@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""ls-claude — list Claude Code sessions, ls-style.
+
+Sessions are stored as JSONL logs under $CLAUDE_CONFIG_DIR/projects/<encoded>/<uuid>.jsonl
+(default config dir: ~/.claude). Each session is listed by its custom title, or by its
+UUID when it has no title.
+
+By default sessions are sorted by the time of the last interaction, most recent first
+(like `ls -t`). Pass -c to sort by the time the session was started instead.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ── model ──────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Session:
+    uuid: str
+    title: str | None
+    cwd: str | None
+    started: datetime | None       # first timestamp seen in the log
+    last: datetime | None          # last timestamp seen in the log
+
+    @property
+    def display_name(self) -> str:
+        return self.title if self.title else self.uuid
+
+    @property
+    def named(self) -> bool:
+        return bool(self.title)
+
+
+def config_dir() -> Path:
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(env) if env else Path.home() / ".claude"
+
+
+def parse_ts(raw: str) -> datetime | None:
+    # Timestamps look like 2026-07-10T14:05:08.451Z (UTC).
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def load_session(path: Path) -> Session | None:
+    title = None
+    cwd = None
+    lo = hi = None
+    saw_any = False
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            saw_any = True
+            if rec.get("type") == "custom-title":
+                title = rec.get("customTitle") or title
+            if rec.get("cwd"):
+                cwd = rec["cwd"]
+            ts_raw = rec.get("timestamp")
+            if ts_raw:
+                ts = parse_ts(ts_raw)
+                if ts is not None:
+                    if lo is None or ts < lo:
+                        lo = ts
+                    if hi is None or ts > hi:
+                        hi = ts
+    if not saw_any:
+        return None
+    return Session(uuid=path.stem, title=title, cwd=cwd, started=lo, last=hi)
+
+
+def discover(root: Path) -> list[Session]:
+    projects = root / "projects"
+    if not projects.is_dir():
+        return []
+    sessions = []
+    for jsonl in projects.glob("*/*.jsonl"):
+        if not jsonl.is_file():
+            continue
+        s = load_session(jsonl)
+        if s is not None:
+            sessions.append(s)
+    return sessions
+
+
+# ── formatting ─────────────────────────────────────────────────────────────
+
+DIR_WIDTH = 15  # fixed width so the dir column lines up in the long view
+
+
+def dirname(cwd: str | None) -> str:
+    if not cwd:
+        name = "?"
+    else:
+        name = os.path.basename(os.path.normpath(cwd)) or cwd
+    if len(name) > DIR_WIDTH:
+        name = name[: DIR_WIDTH - 1] + "…"  # ellipsis
+    return name.ljust(DIR_WIDTH)
+
+
+def format_time(dt: datetime | None, now: datetime) -> str:
+    # Mirror `ls -l`: "Mon DD HH:MM" for recent, "Mon DD  YYYY" for >6 months.
+    if dt is None:
+        return "%12s" % "-"
+    local = dt.astimezone()
+    six_months = 182 * 24 * 3600
+    if abs((now - dt).total_seconds()) > six_months:
+        return local.strftime("%b %e  %Y")
+    return local.strftime("%b %e %H:%M")
+
+
+class Palette:
+    def __init__(self, enabled: bool):
+        self.on = enabled
+
+    def _w(self, code: str, text: str) -> str:
+        return f"\033[{code}m{text}\033[0m" if self.on else text
+
+    def dim(self, t): return self._w("2", t)
+    def dir(self, t): return self._w("34", t)      # blue, like ls dirs
+    def name(self, t): return self._w("0", t)
+    def uuid(self, t): return self._w("33", t)     # yellow for unnamed
+
+
+# ── main ───────────────────────────────────────────────────────────────────
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="ls-claude",
+        description="List Claude Code sessions, sorted by time (ls-style).",
+    )
+    p.add_argument("-l", dest="long", action="store_true",
+                   help="long view: timestamp, launch directory, and name/UUID")
+    p.add_argument("-c", dest="by_started", action="store_true",
+                   help="sort by session start time (default: last interaction)")
+    p.add_argument("-r", dest="reverse", action="store_true",
+                   help="reverse order (oldest first)")
+    p.add_argument("-t", dest="_t", action="store_true",
+                   help="sort by time (default; accepted for ls familiarity)")
+    p.add_argument("--color", choices=("auto", "always", "never"), default="auto",
+                   help="when to colorize output (default: auto)")
+    return p
+
+
+def main(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
+
+    sessions = discover(config_dir())
+
+    now = datetime.now(timezone.utc)
+    key = (lambda s: s.started) if args.by_started else (lambda s: s.last)
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    # Newest first by default (like `ls -t`); -r flips it.
+    sessions.sort(key=lambda s: key(s) or epoch, reverse=not args.reverse)
+
+    if args.color == "always":
+        color = True
+    elif args.color == "never":
+        color = False
+    else:
+        color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    pal = Palette(color)
+
+    if not sessions:
+        print("no Claude sessions found", file=sys.stderr)
+        return 0
+
+    for s in sessions:
+        if args.long:
+            ts = format_time(key(s), now)
+            name = pal.name(s.display_name) if s.named else pal.uuid(s.uuid)
+            print(f"{pal.dim(ts)}  {pal.dir(dirname(s.cwd))}  {name}")
+        else:
+            print(pal.name(s.display_name) if s.named else pal.uuid(s.uuid))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except BrokenPipeError:
+        # e.g. piped into `head`; exit quietly like ls does.
+        try:
+            sys.stdout.close()
+        finally:
+            os._exit(0)
