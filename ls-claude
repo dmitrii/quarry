@@ -28,11 +28,15 @@ from pathlib import Path
 @dataclass
 class Session:
     uuid: str
-    title: str | None
+    title: str | None              # user-set custom title
     cwd: str | None
     started: datetime | None       # first timestamp seen in the log
     last: datetime | None          # last timestamp seen in the log
+    ai_title: str | None = None    # Claude's auto-generated title
+    path: Path | None = None       # the .jsonl log
     open: bool = False             # currently open in a live `claude` process
+    pid: int | None = None         # PID of the live process, when open
+    status: str | None = None      # 'busy'/'idle' reported by a live process
 
     @property
     def display_name(self) -> str:
@@ -57,7 +61,7 @@ def parse_ts(raw: str) -> datetime | None:
 
 
 def load_session(path: Path) -> Session | None:
-    title = None
+    title = ai_title = None
     cwd = None
     lo = hi = None
     saw_any = False
@@ -71,9 +75,13 @@ def load_session(path: Path) -> Session | None:
             except json.JSONDecodeError:
                 continue
             saw_any = True
-            if rec.get("type") == "custom-title":
+            t = rec.get("type")
+            if t == "custom-title":
                 title = rec.get("customTitle") or title
-            if rec.get("cwd"):
+            elif t == "ai-title":
+                ai_title = rec.get("aiTitle") or ai_title
+            # First cwd seen = the launch directory; later records drift as tools cd.
+            if cwd is None and rec.get("cwd"):
                 cwd = rec["cwd"]
             ts_raw = rec.get("timestamp")
             if ts_raw:
@@ -85,17 +93,18 @@ def load_session(path: Path) -> Session | None:
                         hi = ts
     if not saw_any:
         return None
-    return Session(uuid=path.stem, title=title, cwd=cwd, started=lo, last=hi)
+    return Session(uuid=path.stem, title=title, cwd=cwd, started=lo, last=hi,
+                   ai_title=ai_title, path=path)
 
 
-def live_session_ids(root: Path) -> set[str]:
+def live_sessions(root: Path) -> dict[str, dict]:
     # Claude writes ~/.claude/sessions/<pid>.json for each running session.
     # A session is "open" if that file's PID is still alive (files can go stale
-    # if Claude was killed uncleanly).
-    ids: set[str] = set()
+    # if Claude was killed uncleanly). Returns sessionId -> {pid, status}.
+    live: dict[str, dict] = {}
     sdir = root / "sessions"
     if not sdir.is_dir():
-        return ids
+        return live
     for f in sdir.glob("*.json"):
         try:
             pid = int(f.stem)
@@ -108,28 +117,139 @@ def live_session_ids(root: Path) -> set[str]:
         except PermissionError:
             pass             # alive but not ours to signal — still counts
         try:
-            sid = json.loads(f.read_text(encoding="utf-8")).get("sessionId")
+            info = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        sid = info.get("sessionId")
         if sid:
-            ids.add(sid)
-    return ids
+            live[sid] = {"pid": pid, "status": info.get("status")}
+    return live
 
 
 def discover(root: Path) -> list[Session]:
     projects = root / "projects"
     if not projects.is_dir():
         return []
-    live = live_session_ids(root)
+    live = live_sessions(root)
     sessions = []
     for jsonl in projects.glob("*/*.jsonl"):
         if not jsonl.is_file():
             continue
         s = load_session(jsonl)
         if s is not None:
-            s.open = s.uuid in live
+            if s.uuid in live:
+                s.open = True
+                s.pid = live[s.uuid]["pid"]
+                s.status = live[s.uuid]["status"]
             sessions.append(s)
     return sessions
+
+
+def find_session(sessions: list[Session], query: str) -> tuple[Session | None, list[Session]]:
+    """Resolve a query to one session. Returns (match, ambiguous_candidates).
+
+    Match precedence: exact UUID > exact title (custom or AI) > UUID prefix >
+    case-insensitive substring of a title. Ties beyond an exact hit are reported
+    as candidates so the user can disambiguate.
+    """
+    q = query.strip()
+    ql = q.lower()
+
+    def names(s: Session) -> list[str]:
+        return [n for n in (s.title, s.ai_title) if n]
+
+    for s in sessions:                                   # exact UUID
+        if s.uuid == q:
+            return s, []
+    exact = [s for s in sessions if any(n == q for n in names(s))]
+    if len(exact) == 1:
+        return exact[0], []
+    if len(exact) > 1:
+        return None, exact
+
+    prefix = [s for s in sessions if s.uuid.startswith(ql)]
+    if len(prefix) == 1:
+        return prefix[0], []
+    if len(prefix) > 1:
+        return None, prefix
+
+    sub = [s for s in sessions if any(ql in n.lower() for n in names(s))]
+    if len(sub) == 1:
+        return sub[0], []
+    return None, sub
+
+
+def analyze(session: Session) -> dict:
+    """Second, deep pass over one log: counts, tokens, models, prompt previews."""
+    user_prompts = 0
+    tool_calls = 0
+    asst_ids: set[str] = set()
+    out_tokens: dict[str, int] = {}   # message.id -> max output_tokens seen
+    context_peak = 0
+    models: set[str] = set()
+    branch = version = None
+    first_prompt = last_prompt = None
+
+    assert session.path is not None
+    for line in session.path.open(encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("gitBranch"):
+            branch = rec["gitBranch"]
+        if rec.get("version"):
+            version = rec["version"]
+        t = rec.get("type")
+        if t == "user" and not rec.get("isMeta"):
+            content = rec.get("message", {}).get("content")
+            # A real human prompt is text; tool results are lists of tool_result.
+            is_prompt = isinstance(content, str) or (
+                isinstance(content, list)
+                and any(isinstance(b, dict) and b.get("type") != "tool_result"
+                        for b in content))
+            if is_prompt:
+                user_prompts += 1
+                text = content if isinstance(content, str) else next(
+                    (b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"), "")
+                text = " ".join(text.split())
+                if text:
+                    first_prompt = first_prompt or text
+                    last_prompt = text
+        elif t == "assistant":
+            msg = rec.get("message", {})
+            mid = msg.get("id")
+            if mid:
+                asst_ids.add(mid)
+            if msg.get("model"):
+                models.add(msg["model"])
+            u = msg.get("usage") or {}
+            if mid and "output_tokens" in u:
+                out_tokens[mid] = max(out_tokens.get(mid, 0), u["output_tokens"])
+            ctx = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+                   + u.get("cache_creation_input_tokens", 0))
+            context_peak = max(context_peak, ctx)
+            for b in msg.get("content", []):
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    tool_calls += 1
+
+    return {
+        "user_prompts": user_prompts,
+        "assistant_msgs": len(asst_ids),
+        "tool_calls": tool_calls,
+        "output_tokens": sum(out_tokens.values()),
+        "context_peak": context_peak,
+        "models": sorted(models),
+        "branch": branch,
+        "version": version,
+        "first_prompt": first_prompt,
+        "last_prompt": last_prompt,
+        "log_bytes": session.path.stat().st_size,
+    }
 
 
 # ── formatting ─────────────────────────────────────────────────────────────
@@ -158,6 +278,53 @@ def format_time(dt: datetime | None, now: datetime) -> str:
     return local.strftime("%b %e %H:%M")
 
 
+def iso(dt: datetime | None) -> str:
+    if dt is None:
+        return "-"
+    # Local ISO-8601 with offset, seconds precision.
+    return dt.astimezone().isoformat(timespec="seconds")
+
+
+def human_bytes(n: int) -> str:
+    step = 1024.0
+    unit = "B"
+    val = float(n)
+    for u in ("B", "KiB", "MiB", "GiB"):
+        unit = u
+        if val < step:
+            break
+        val /= step
+    if unit == "B":
+        return f"{n} B"
+    return f"{val:.1f} {unit} ({n:,} B)"
+
+
+def human_duration(delta) -> str:
+    secs = int(delta.total_seconds())
+    if secs < 0:
+        secs = 0
+    d, rem = divmod(secs, 86400)
+    h, rem = divmod(rem, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if d:
+        parts.append(f"{d}d")
+    if h or d:
+        parts.append(f"{h}h")
+    if m or h or d:
+        parts.append(f"{m}m")
+    parts.append(f"{s}s")
+    return " ".join(parts)
+
+
+def human_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1e3:.1f}k"
+    return str(n)
+
+
 class Palette:
     def __init__(self, enabled: bool):
         self.on = enabled
@@ -170,6 +337,56 @@ class Palette:
     def name(self, t): return self._w("0", t)
     def uuid(self, t): return self._w("33", t)     # yellow for unnamed
     def open(self, t): return self._w("1;32", t)   # bold green for live sessions
+    def label(self, t): return self._w("1", t)     # bold field labels
+    def head(self, t): return self._w("1;36", t)   # bold cyan session heading
+
+
+def print_detail(s: Session, stats: dict, pal: Palette, now: datetime) -> None:
+    def row(lbl: str, val: str) -> None:
+        print(f"  {pal.label(lbl.ljust(13))}  {val}")
+
+    heading = s.title or s.ai_title or s.uuid
+    print(pal.head(heading))
+
+    row("Session ID", s.uuid)
+    if s.title:
+        row("Name", s.title)
+    if s.ai_title and s.ai_title != s.title:
+        row("AI title", pal.dim(s.ai_title))
+    row("Directory", s.cwd or "?")
+    row("Started", iso(s.started))
+    row("Last update", iso(s.last))
+    if s.started and s.last:
+        row("Duration", human_duration(s.last - s.started))
+    if s.open:
+        state = f"{s.pid}" + (f" ({s.status})" if s.status else "")
+        row("Process", pal.open(state))
+    else:
+        row("Process", pal.dim("NOT OPEN"))
+
+    row("User prompts", str(stats["user_prompts"]))
+    row("Agent replies", str(stats["assistant_msgs"]))
+    row("Tool calls", str(stats["tool_calls"]))
+    tok = (f"↓ {human_tokens(stats['output_tokens'])} generated · "
+           f"↑ {human_tokens(stats['context_peak'])} peak context")
+    row("Tokens", tok)
+    row("Log size", human_bytes(stats["log_bytes"]))
+    if stats["models"]:
+        row("Model", ", ".join(stats["models"]))
+    if stats["branch"]:
+        row("Git branch", stats["branch"])
+    if stats["version"]:
+        row("CLI version", stats["version"])
+
+    def preview(text: str | None) -> str:
+        if not text:
+            return pal.dim("-")
+        return text if len(text) <= 76 else text[:75] + "…"
+
+    if stats["first_prompt"]:
+        row("First prompt", pal.dim(preview(stats["first_prompt"])))
+    if stats["last_prompt"] and stats["last_prompt"] != stats["first_prompt"]:
+        row("Last prompt", pal.dim(preview(stats["last_prompt"])))
 
 
 # ── main ───────────────────────────────────────────────────────────────────
@@ -178,8 +395,11 @@ class Palette:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ls-claude",
-        description="List Claude Code sessions, sorted by time (ls-style).",
+        description="List Claude Code sessions, sorted by time (ls-style). "
+                    "Give a UUID (or prefix) or a name to show one session in detail.",
     )
+    p.add_argument("query", nargs="?",
+                   help="show details for the session matching this UUID/prefix/name")
     p.add_argument("-l", dest="long", action="store_true",
                    help="long view: timestamp, launch directory, and name/UUID")
     p.add_argument("-c", dest="by_started", action="store_true",
@@ -214,6 +434,20 @@ def main(argv: list[str]) -> int:
 
     if not sessions:
         print("no Claude sessions found", file=sys.stderr)
+        return 0
+
+    if args.query is not None:
+        match, candidates = find_session(sessions, args.query)
+        if match is None:
+            if candidates:
+                print(f"'{args.query}' is ambiguous; matches:", file=sys.stderr)
+                for c in candidates:
+                    print(f"  {c.uuid}  {c.title or c.ai_title or ''}",
+                          file=sys.stderr)
+            else:
+                print(f"no session matches '{args.query}'", file=sys.stderr)
+            return 1
+        print_detail(match, analyze(match), pal, now)
         return 0
 
     for s in sessions:
