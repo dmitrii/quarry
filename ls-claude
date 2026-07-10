@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -186,7 +187,7 @@ def analyze(session: Session) -> dict:
     asst_ids: set[str] = set()
     out_tokens: dict[str, int] = {}   # message.id -> max output_tokens seen
     context_peak = 0
-    models: set[str] = set()
+    models: dict[str, None] = {}      # first-seen order preserved
     branch = version = None
     first_prompt = last_prompt = None
 
@@ -226,7 +227,7 @@ def analyze(session: Session) -> dict:
             if mid:
                 asst_ids.add(mid)
             if msg.get("model"):
-                models.add(msg["model"])
+                models.setdefault(msg["model"], None)
             u = msg.get("usage") or {}
             if mid and "output_tokens" in u:
                 out_tokens[mid] = max(out_tokens.get(mid, 0), u["output_tokens"])
@@ -243,7 +244,7 @@ def analyze(session: Session) -> dict:
         "tool_calls": tool_calls,
         "output_tokens": sum(out_tokens.values()),
         "context_peak": context_peak,
-        "models": sorted(models),
+        "models": list(models),
         "branch": branch,
         "version": version,
         "first_prompt": first_prompt,
@@ -341,18 +342,23 @@ class Palette:
     def head(self, t): return self._w("1;36", t)   # bold cyan session heading
 
 
-def print_detail(s: Session, stats: dict, pal: Palette, now: datetime) -> None:
+LABEL_W = 13
+ROW_PREFIX = 2 + LABEL_W + 2   # visible columns before a row's value
+
+
+def print_detail(s: Session, stats: dict, pal: Palette, now: datetime,
+                 width: int) -> None:
     def row(lbl: str, val: str) -> None:
-        print(f"  {pal.label(lbl.ljust(13))}  {val}")
+        print(f"  {pal.label(lbl.ljust(LABEL_W))}  {val}")
 
     heading = s.title or s.ai_title or s.uuid
     print(pal.head(heading))
 
     row("Session ID", s.uuid)
-    if s.title:
-        row("Name", s.title)
-    if s.ai_title and s.ai_title != s.title:
-        row("AI title", pal.dim(s.ai_title))
+    # Name and AI title are always shown, side by side, so it's clear which is
+    # user-set and which Claude generated — and that an unset name can be set.
+    row("Name", s.title if s.title else pal.dim("(unset — use /rename to set)"))
+    row("AI title", pal.dim(s.ai_title) if s.ai_title else pal.dim("(none yet)"))
     row("Directory", s.cwd or "?")
     row("Started", iso(s.started))
     row("Last update", iso(s.last))
@@ -371,17 +377,21 @@ def print_detail(s: Session, stats: dict, pal: Palette, now: datetime) -> None:
            f"↑ {human_tokens(stats['context_peak'])} peak context")
     row("Tokens", tok)
     row("Log size", human_bytes(stats["log_bytes"]))
-    if stats["models"]:
-        row("Model", ", ".join(stats["models"]))
+    models = stats["models"]
+    if models:
+        row("Model" if len(models) == 1 else "Models", ", ".join(models))
     if stats["branch"]:
         row("Git branch", stats["branch"])
     if stats["version"]:
         row("CLI version", stats["version"])
 
+    # Fit the prompt preview to the terminal: wider terminal -> more text.
+    avail = max(20, width - ROW_PREFIX)
+
     def preview(text: str | None) -> str:
         if not text:
             return pal.dim("-")
-        return text if len(text) <= 76 else text[:75] + "…"
+        return text if len(text) <= avail else text[: avail - 1] + "…"
 
     if stats["first_prompt"]:
         row("First prompt", pal.dim(preview(stats["first_prompt"])))
@@ -447,7 +457,8 @@ def main(argv: list[str]) -> int:
             else:
                 print(f"no session matches '{args.query}'", file=sys.stderr)
             return 1
-        print_detail(match, analyze(match), pal, now)
+        width = shutil.get_terminal_size(fallback=(80, 24)).columns
+        print_detail(match, analyze(match), pal, now, width)
         return 0
 
     for s in sessions:
