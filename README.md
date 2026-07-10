@@ -1,25 +1,31 @@
 # ls-claude
 
-List your [Claude Code](https://claude.com/claude-code) sessions from the terminal,
-following `ls` conventions. Reads the JSONL session logs under
-`$CLAUDE_CONFIG_DIR/projects/` (default `~/.claude/projects/`) — no Claude/agent
-invocations, just the on-disk logs.
+Browse and manage your [Claude Code](https://claude.com/claude-code) sessions from the
+terminal, following `ls`/`rm` conventions. Reads Claude's on-disk state under
+`$CLAUDE_CONFIG_DIR` (default `~/.claude`) and `~/.claude.json` — no Claude/agent
+invocations. Two commands:
+
+- **`ls-claude`** — list sessions, or show one in detail.
+- **`rm-claude`** — remove a session's on-disk artifacts (with confirmation).
 
 ## Install
 
-`ls-claude` is a single, dependency-free Python 3 script. Symlink it onto your `PATH`:
+Dependency-free Python 3. The two commands are thin front-ends over a shared module
+(`claude_sessions.py`); symlink the commands onto your `PATH` (they resolve the symlink
+to find the module, so it can stay in the repo):
 
 ```sh
 mkdir -p ~/.local/bin
 ln -s "$PWD/ls-claude" ~/.local/bin/ls-claude
+ln -s "$PWD/rm-claude" ~/.local/bin/rm-claude
 # ensure ~/.local/bin is on PATH (fish):
 fish_add_path ~/.local/bin
 ```
 
-## Usage
+## `ls-claude`
 
 ```
-ls-claude [-l] [-c] [-r] [-t] [-S] [--size {log}] [--color {auto,always,never}] [query]
+ls-claude [-l] [-a] [-c] [-r] [-t] [-S] [--size {log}] [--color {auto,always,never}] [query]
 ```
 
 ### Listing
@@ -28,6 +34,8 @@ ls-claude [-l] [-c] [-r] [-t] [-S] [--size {log}] [--color {auto,always,never}] 
   no custom name. Sorted by **last interaction**, most recent first (like `ls -t`).
 - `-l` — long view. Columns: open marker, size, timestamp, launch directory
   (fixed 20 chars), and name/UUID.
+- `-a` — also list **removed** sessions still referenced in `~/.claude.json` (in grey),
+  like `ls -a` surfacing otherwise-hidden entries.
 - `-c` — sort by **start** time instead of last interaction.
 - `-S` — sort by **size**, largest first.
 - `-r` — reverse the sort (oldest/smallest first).
@@ -86,19 +94,62 @@ Notes:
 - **Agent replies** counts distinct model responses (unique message IDs), not raw log
   records. **Tokens** are summed generated output and peak input context from usage data.
 - Prompt previews grow to fill a wider terminal.
+- **Removed sessions.** The detail view works for a removed session too (resolvable by
+  UUID/name even without `-a`): log-only fields show `-`, while directory, duration,
+  tokens, cost, and model are recovered from `~/.claude.json`'s last-run record.
+
+## `rm-claude`
+
+```
+rm-claude [-f] [-n] [--color {auto,always,never}] <query>
+```
+
+Removes a session's on-disk artifacts, resolving `<query>` exactly as the detail view
+does (ambiguous queries are **refused**, not guessed). It deletes only the files/dirs
+named after the UUID:
+
+- `projects/<encoded-cwd>/<uuid>.jsonl` and its `<uuid>/` sidecar dir
+- `session-env/<uuid>/`
+- `file-history/<uuid>/`
+
+Centralized files (`history.jsonl`, `~/.claude.json`) are **left untouched** — the
+orphaned references there are harmless, and this keeps `rm-claude` from ever rewriting
+shared state. (A session you remove therefore lingers as a grey `-a` entry until Claude
+next overwrites that directory's `lastSessionId`.)
+
+Safety:
+- **Refuses to remove a session that is currently open** in a live `claude` process.
+- Prompts before deleting (`rm -i` style). `-f` skips the prompt; `-n` previews the
+  exact file list and total size and deletes nothing. Without a TTY and without `-f`,
+  it refuses rather than delete unprompted.
+
+```
+$ rm-claude -n debug-flaky
+Would remove session 8f3c1a92-4b7e-4c1d-9a2f-1e6d0b5c7a34  "Track down and fix the intermittent test failure"
+    26K  ~/.claude/projects/-Users-you/8f3c1a92-….jsonl
+      0  ~/.claude/session-env/8f3c1a92-…/
+  2 item(s), 25.5 KiB (26,143 B)
+```
 
 ## Size metrics
 
-Size is pluggable via the `SIZE_METRICS` registry in the script; `--size` and `-S` both
-read from it. Today the only metric is `log` (log-file bytes on disk), which is cheap —
-a `stat()` per file. Adding a metric is a one-line registry entry.
+Size is pluggable via the `SIZE_METRICS` registry in `claude_sessions.py`; `--size` and
+`-S` both read from it. Today the only metric is `log` (log-file bytes on disk), which is
+cheap — a `stat()` per file. Adding a metric is a one-line registry entry.
+
+## Layout
+
+- `claude_sessions.py` — shared core: discovery, matching, log analysis, artifact listing,
+  and formatting. Both commands import it.
+- `ls-claude`, `rm-claude` — thin CLI front-ends.
 
 ## Data source
 
-Everything comes from `$CLAUDE_CONFIG_DIR` (default `~/.claude`):
-`projects/*/*.jsonl` for the logs and `sessions/<pid>.json` for liveness. These are
-undocumented Claude Code internals (developed against CLI v2.1.x) and may change; the
-script degrades gracefully when files are missing or unparseable.
+Everything comes from `$CLAUDE_CONFIG_DIR` (default `~/.claude`): `projects/*/*.jsonl` for
+the logs, `sessions/<pid>.json` for liveness, and `~/.claude.json` for per-directory
+`lastSessionId` pointers (used to surface removed sessions). These are undocumented Claude
+Code internals (developed against CLI v2.1.x) and may change; the tools degrade gracefully
+when files are missing or unparseable.
 
 ## Possible improvements
 

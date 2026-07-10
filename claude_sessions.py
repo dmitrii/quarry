@@ -1,0 +1,448 @@
+"""Shared core for the ls-claude / rm-claude tools.
+
+Reads Claude Code's on-disk session state under $CLAUDE_CONFIG_DIR (default
+~/.claude) and the top-level ~/.claude.json. No Claude/agent invocations.
+
+Session state lives in a few places, all keyed by the session UUID:
+  projects/<encoded-cwd>/<uuid>.jsonl   the conversation log (source of truth)
+  projects/<encoded-cwd>/<uuid>/        sidecar dir: subagents/, tool-results/
+  session-env/<uuid>/                   per-session environment
+  file-history/<uuid>/                  file-edit snapshots
+The live registry sessions/<pid>.json is keyed by PID, exists only while a
+session runs, and is what tells us a session is "open". ~/.claude.json holds a
+per-directory `lastSessionId` pointer plus that session's last-run metrics.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ── model ──────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Session:
+    uuid: str
+    title: str | None              # user-set custom title
+    cwd: str | None
+    started: datetime | None       # first timestamp seen in the log
+    last: datetime | None          # last timestamp seen in the log
+    ai_title: str | None = None    # Claude's auto-generated title
+    path: Path | None = None       # the .jsonl log
+    log_bytes: int = 0             # size of the log on disk
+    open: bool = False             # currently open in a live `claude` process
+    pid: int | None = None         # PID of the live process, when open
+    status: str | None = None      # 'busy'/'idle' reported by a live process
+    deleted: bool = False          # referenced in .claude.json but log is gone
+    last_meta: dict | None = None  # .claude.json last-run metrics, for deleted
+
+    @property
+    def display_name(self) -> str:
+        return self.title if self.title else self.uuid
+
+    @property
+    def named(self) -> bool:
+        return bool(self.title)
+
+
+def config_dir() -> Path:
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(env) if env else Path.home() / ".claude"
+
+
+def claude_json_path(root: Path) -> Path | None:
+    # ~/.claude.json normally sits beside ~/.claude; be forgiving about layout.
+    for cand in (root / ".claude.json", root.parent / ".claude.json",
+                 Path.home() / ".claude.json"):
+        if cand.exists():
+            return cand
+    return None
+
+
+def parse_ts(raw: str) -> datetime | None:
+    # Timestamps look like 2026-07-10T14:05:08.451Z (UTC).
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def load_session(path: Path) -> Session | None:
+    title = ai_title = None
+    cwd = None
+    lo = hi = None
+    saw_any = False
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            saw_any = True
+            t = rec.get("type")
+            if t == "custom-title":
+                title = rec.get("customTitle") or title
+            elif t == "ai-title":
+                ai_title = rec.get("aiTitle") or ai_title
+            # First cwd seen = the launch directory; later records drift as tools cd.
+            if cwd is None and rec.get("cwd"):
+                cwd = rec["cwd"]
+            ts_raw = rec.get("timestamp")
+            if ts_raw:
+                ts = parse_ts(ts_raw)
+                if ts is not None:
+                    if lo is None or ts < lo:
+                        lo = ts
+                    if hi is None or ts > hi:
+                        hi = ts
+    if not saw_any:
+        return None
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    return Session(uuid=path.stem, title=title, cwd=cwd, started=lo, last=hi,
+                   ai_title=ai_title, path=path, log_bytes=size)
+
+
+def live_sessions(root: Path) -> dict[str, dict]:
+    # A session is "open" if sessions/<pid>.json exists and that PID is alive
+    # (files can go stale if Claude was killed uncleanly). -> sessionId -> info.
+    live: dict[str, dict] = {}
+    sdir = root / "sessions"
+    if not sdir.is_dir():
+        return live
+    for f in sdir.glob("*.json"):
+        try:
+            pid = int(f.stem)
+        except ValueError:
+            continue
+        try:
+            os.kill(pid, 0)  # signal 0 = liveness probe, sends nothing
+        except ProcessLookupError:
+            continue         # stale registry entry; process is gone
+        except PermissionError:
+            pass             # alive but not ours to signal — still counts
+        try:
+            info = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        sid = info.get("sessionId")
+        if sid:
+            live[sid] = {"pid": pid, "status": info.get("status")}
+    return live
+
+
+def discover(root: Path) -> list[Session]:
+    """All sessions with an on-disk log, annotated with live-process state."""
+    projects = root / "projects"
+    if not projects.is_dir():
+        return []
+    live = live_sessions(root)
+    sessions = []
+    for jsonl in projects.glob("*/*.jsonl"):
+        if not jsonl.is_file():
+            continue
+        s = load_session(jsonl)
+        if s is not None:
+            if s.uuid in live:
+                s.open = True
+                s.pid = live[s.uuid]["pid"]
+                s.status = live[s.uuid]["status"]
+            sessions.append(s)
+    return sessions
+
+
+_LAST_META_KEYS = ("lastDuration", "lastCost", "lastTotalInputTokens",
+                   "lastTotalOutputTokens", "lastModelUsage",
+                   "lastLinesAdded", "lastLinesRemoved")
+
+
+def deleted_sessions(root: Path) -> list[Session]:
+    """Sessions referenced by .claude.json's per-directory `lastSessionId` whose
+    log no longer exists — i.e. removed sessions Claude still points at."""
+    cj = claude_json_path(root)
+    if cj is None:
+        return []
+    try:
+        data = json.loads(cj.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    projects = root / "projects"
+    existing = {p.stem for p in projects.glob("*/*.jsonl")} if projects.is_dir() else set()
+    out: list[Session] = []
+    seen: set[str] = set()
+    for cwd, pv in (data.get("projects") or {}).items():
+        if not isinstance(pv, dict):
+            continue
+        sid = pv.get("lastSessionId")
+        if not sid or sid in existing or sid in seen:
+            continue
+        seen.add(sid)
+        out.append(Session(
+            uuid=sid, title=None, cwd=cwd, started=None, last=None,
+            deleted=True, last_meta={k: pv.get(k) for k in _LAST_META_KEYS},
+        ))
+    return out
+
+
+def find_session(sessions: list[Session], query: str) -> tuple[Session | None, list[Session]]:
+    """Resolve a query to one session. Returns (match, ambiguous_candidates).
+
+    Match precedence: exact UUID > exact title (custom or AI) > UUID prefix >
+    case-insensitive substring of a title. Ties beyond an exact hit are reported
+    as candidates so the caller can disambiguate.
+    """
+    q = query.strip()
+    ql = q.lower()
+
+    def names(s: Session) -> list[str]:
+        return [n for n in (s.title, s.ai_title) if n]
+
+    for s in sessions:                                   # exact UUID
+        if s.uuid == q:
+            return s, []
+    exact = [s for s in sessions if any(n == q for n in names(s))]
+    if len(exact) == 1:
+        return exact[0], []
+    if len(exact) > 1:
+        return None, exact
+
+    prefix = [s for s in sessions if s.uuid.startswith(ql)]
+    if len(prefix) == 1:
+        return prefix[0], []
+    if len(prefix) > 1:
+        return None, prefix
+
+    sub = [s for s in sessions if any(ql in n.lower() for n in names(s))]
+    if len(sub) == 1:
+        return sub[0], []
+    return None, sub
+
+
+def analyze(session: Session) -> dict:
+    """Second, deep pass over one log: counts, tokens, models, prompt previews."""
+    user_prompts = 0
+    tool_calls = 0
+    asst_ids: set[str] = set()
+    out_tokens: dict[str, int] = {}   # message.id -> max output_tokens seen
+    context_peak = 0
+    models: dict[str, None] = {}      # first-seen order preserved
+    branch = version = None
+    first_prompt = last_prompt = None
+
+    assert session.path is not None
+    for line in session.path.open(encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("gitBranch"):
+            branch = rec["gitBranch"]
+        if rec.get("version"):
+            version = rec["version"]
+        t = rec.get("type")
+        if t == "user" and not rec.get("isMeta"):
+            content = rec.get("message", {}).get("content")
+            # A real human prompt is text; tool results are lists of tool_result.
+            is_prompt = isinstance(content, str) or (
+                isinstance(content, list)
+                and any(isinstance(b, dict) and b.get("type") != "tool_result"
+                        for b in content))
+            if is_prompt:
+                user_prompts += 1
+                text = content if isinstance(content, str) else next(
+                    (b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"), "")
+                text = " ".join(text.split())
+                if text:
+                    first_prompt = first_prompt or text
+                    last_prompt = text
+        elif t == "assistant":
+            msg = rec.get("message", {})
+            mid = msg.get("id")
+            if mid:
+                asst_ids.add(mid)
+            if msg.get("model"):
+                models.setdefault(msg["model"], None)
+            u = msg.get("usage") or {}
+            if mid and "output_tokens" in u:
+                out_tokens[mid] = max(out_tokens.get(mid, 0), u["output_tokens"])
+            ctx = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+                   + u.get("cache_creation_input_tokens", 0))
+            context_peak = max(context_peak, ctx)
+            for b in msg.get("content", []):
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    tool_calls += 1
+
+    return {
+        "user_prompts": user_prompts,
+        "assistant_msgs": len(asst_ids),
+        "tool_calls": tool_calls,
+        "output_tokens": sum(out_tokens.values()),
+        "context_peak": context_peak,
+        "models": list(models),
+        "branch": branch,
+        "version": version,
+        "first_prompt": first_prompt,
+        "last_prompt": last_prompt,
+        "log_bytes": session.path.stat().st_size,
+    }
+
+
+def artifacts(root: Path, session: Session) -> list[Path]:
+    """Every on-disk artifact belonging to a session (existing paths only).
+
+    All are named by the UUID, so removal is a straight delete — no centralized
+    file is edited. history.jsonl / .claude.json references are left untouched.
+    """
+    paths: list[Path] = []
+    if session.path:
+        paths.append(session.path)                     # <uuid>.jsonl
+        paths.append(session.path.parent / session.uuid)  # sidecar dir
+    paths.append(root / "session-env" / session.uuid)
+    paths.append(root / "file-history" / session.uuid)
+    return [p for p in paths if p.exists()]
+
+
+def path_size(p: Path) -> int:
+    """Total bytes of a file or a directory tree."""
+    try:
+        if p.is_file() or p.is_symlink():
+            return p.stat().st_size
+        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+    except OSError:
+        return 0
+
+
+# ── formatting ─────────────────────────────────────────────────────────────
+
+DIR_WIDTH = 20  # fixed width so the dir column lines up in the long view
+LABEL_W = 13
+ROW_PREFIX = 2 + LABEL_W + 2   # visible columns before a detail row's value
+SIZE_COL_W = 6                 # right-aligned width of the size column
+
+# Pluggable notions of a session's "size". Each entry: metric-key -> (detail
+# label, accessor over a Session). Add more here (e.g. tokens, message count)
+# and they become available to the size column, -S sorting, and --size.
+SIZE_METRICS: dict[str, tuple[str, "callable"]] = {
+    "log": ("Log size", lambda s: s.log_bytes),
+}
+DEFAULT_SIZE_METRIC = "log"
+
+
+def dirname(cwd: str | None) -> str:
+    if not cwd:
+        name = "?"
+    else:
+        name = os.path.basename(os.path.normpath(cwd)) or cwd
+    if len(name) > DIR_WIDTH:
+        name = name[: DIR_WIDTH - 1] + "…"  # ellipsis
+    return name.ljust(DIR_WIDTH)
+
+
+def format_time(dt: datetime | None, now: datetime) -> str:
+    # Mirror `ls -l`: "Mon DD HH:MM" for recent, "Mon DD  YYYY" for >6 months.
+    if dt is None:
+        return "%12s" % "-"
+    local = dt.astimezone()
+    six_months = 182 * 24 * 3600
+    if abs((now - dt).total_seconds()) > six_months:
+        return local.strftime("%b %e  %Y")
+    return local.strftime("%b %e %H:%M")
+
+
+def iso(dt: datetime | None) -> str:
+    if dt is None:
+        return "-"
+    return dt.astimezone().isoformat(timespec="seconds")
+
+
+def human_bytes(n: int) -> str:
+    step = 1024.0
+    unit = "B"
+    val = float(n)
+    for u in ("B", "KiB", "MiB", "GiB"):
+        unit = u
+        if val < step:
+            break
+        val /= step
+    if unit == "B":
+        return f"{n} B"
+    return f"{val:.1f} {unit} ({n:,} B)"
+
+
+def human_duration(delta_or_secs) -> str:
+    secs = (int(delta_or_secs.total_seconds())
+            if hasattr(delta_or_secs, "total_seconds") else int(delta_or_secs))
+    if secs < 0:
+        secs = 0
+    d, rem = divmod(secs, 86400)
+    h, rem = divmod(rem, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if d:
+        parts.append(f"{d}d")
+    if h or d:
+        parts.append(f"{h}h")
+    if m or h or d:
+        parts.append(f"{m}m")
+    parts.append(f"{s}s")
+    return " ".join(parts)
+
+
+def human_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1e3:.1f}k"
+    return str(n)
+
+
+def human_size_short(n: int) -> str:
+    # Compact, column-friendly, `ls -h` style: 1024-based, one decimal below 10.
+    val = float(n)
+    for unit in ("", "K", "M", "G", "T"):
+        if unit == "":
+            if val < 1024:
+                return str(n)
+        elif val < 1024:
+            return (f"{val:.1f}{unit}" if val < 10 else f"{val:.0f}{unit}")
+        val /= 1024
+    return f"{val:.0f}P"
+
+
+class Palette:
+    def __init__(self, enabled: bool):
+        self.on = enabled
+
+    def _w(self, code: str, text: str) -> str:
+        return f"\033[{code}m{text}\033[0m" if self.on else text
+
+    def dim(self, t): return self._w("2", t)
+    def gray(self, t): return self._w("90", t)     # grey, for deleted sessions
+    def dir(self, t): return self._w("34", t)      # blue, like ls dirs
+    def name(self, t): return self._w("0", t)
+    def uuid(self, t): return self._w("33", t)     # yellow for unnamed
+    def open(self, t): return self._w("1;32", t)   # bold green for live sessions
+    def label(self, t): return self._w("1", t)     # bold field labels
+    def head(self, t): return self._w("1;36", t)   # bold cyan session heading
+    def warn(self, t): return self._w("1;31", t)   # bold red for warnings
+
+
+def color_enabled(mode: str, stream) -> bool:
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return stream.isatty() and not os.environ.get("NO_COLOR")
