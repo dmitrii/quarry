@@ -7,6 +7,9 @@ UUID when it has no title.
 
 By default sessions are sorted by the time of the last interaction, most recent first
 (like `ls -t`). Pass -c to sort by the time the session was started instead.
+
+In the long view a leading '*' (bold green) marks a session that is currently open in a
+live `claude` process, determined from $CLAUDE_CONFIG_DIR/sessions/<pid>.json.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ class Session:
     cwd: str | None
     started: datetime | None       # first timestamp seen in the log
     last: datetime | None          # last timestamp seen in the log
+    open: bool = False             # currently open in a live `claude` process
 
     @property
     def display_name(self) -> str:
@@ -84,23 +88,53 @@ def load_session(path: Path) -> Session | None:
     return Session(uuid=path.stem, title=title, cwd=cwd, started=lo, last=hi)
 
 
+def live_session_ids(root: Path) -> set[str]:
+    # Claude writes ~/.claude/sessions/<pid>.json for each running session.
+    # A session is "open" if that file's PID is still alive (files can go stale
+    # if Claude was killed uncleanly).
+    ids: set[str] = set()
+    sdir = root / "sessions"
+    if not sdir.is_dir():
+        return ids
+    for f in sdir.glob("*.json"):
+        try:
+            pid = int(f.stem)
+        except ValueError:
+            continue
+        try:
+            os.kill(pid, 0)  # signal 0 = liveness probe, sends nothing
+        except ProcessLookupError:
+            continue         # stale registry entry; process is gone
+        except PermissionError:
+            pass             # alive but not ours to signal — still counts
+        try:
+            sid = json.loads(f.read_text(encoding="utf-8")).get("sessionId")
+        except (OSError, json.JSONDecodeError):
+            continue
+        if sid:
+            ids.add(sid)
+    return ids
+
+
 def discover(root: Path) -> list[Session]:
     projects = root / "projects"
     if not projects.is_dir():
         return []
+    live = live_session_ids(root)
     sessions = []
     for jsonl in projects.glob("*/*.jsonl"):
         if not jsonl.is_file():
             continue
         s = load_session(jsonl)
         if s is not None:
+            s.open = s.uuid in live
             sessions.append(s)
     return sessions
 
 
 # ── formatting ─────────────────────────────────────────────────────────────
 
-DIR_WIDTH = 15  # fixed width so the dir column lines up in the long view
+DIR_WIDTH = 20  # fixed width so the dir column lines up in the long view
 
 
 def dirname(cwd: str | None) -> str:
@@ -135,6 +169,7 @@ class Palette:
     def dir(self, t): return self._w("34", t)      # blue, like ls dirs
     def name(self, t): return self._w("0", t)
     def uuid(self, t): return self._w("33", t)     # yellow for unnamed
+    def open(self, t): return self._w("1;32", t)   # bold green for live sessions
 
 
 # ── main ───────────────────────────────────────────────────────────────────
@@ -182,12 +217,16 @@ def main(argv: list[str]) -> int:
         return 0
 
     for s in sessions:
+        name = pal.open(s.display_name) if s.open else (
+            pal.name(s.display_name) if s.named else pal.uuid(s.uuid))
         if args.long:
+            # Leading one-char column, ls -F style: '*' marks a session that is
+            # currently open in a live `claude` process.
+            mark = pal.open("*") if s.open else " "
             ts = format_time(key(s), now)
-            name = pal.name(s.display_name) if s.named else pal.uuid(s.uuid)
-            print(f"{pal.dim(ts)}  {pal.dir(dirname(s.cwd))}  {name}")
+            print(f"{mark} {pal.dim(ts)}  {pal.dir(dirname(s.cwd))}  {name}")
         else:
-            print(pal.name(s.display_name) if s.named else pal.uuid(s.uuid))
+            print(name)
     return 0
 
 
