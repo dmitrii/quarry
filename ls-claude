@@ -94,6 +94,9 @@ def print_detail(s: cs.Session, pal: cs.Palette, now: datetime, width: int) -> N
            f"↑ {cs.human_tokens(stats['context_peak'])} peak context")
     _row(pal, "Tokens", tok)
     _row(pal, "Log size", cs.human_bytes(stats["log_bytes"]))
+    lc = stats["latest_context"]
+    _row(pal, "Latest context",
+         f"{cs.human_tokens(lc)} tokens ({lc:,})" if lc else pal.dim("-"))
     models = stats["models"]
     if models:
         _row(pal, "Model" if len(models) == 1 else "Models", ", ".join(models))
@@ -166,7 +169,9 @@ def main(argv: list[str]) -> int:
 
     now = datetime.now(timezone.utc)
     time_key = (lambda s: s.started) if args.by_started else (lambda s: s.last)
-    size_of = cs.SIZE_METRICS[args.size][1]
+    metric = cs.SIZE_METRICS[args.size]
+    size_of = metric.get
+    size_fmt = cs.human_tokens if metric.unit == "tokens" else cs.human_size_short
     epoch = datetime.min.replace(tzinfo=timezone.utc)
 
     pal = cs.Palette(cs.color_enabled(args.color, sys.stdout))
@@ -187,6 +192,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     listing = sessions + deleted if args.all else sessions
+    cs.ensure_sizes(listing, args.size)   # no-op for cheap metrics (e.g. log)
     if args.by_size:
         listing.sort(key=size_of, reverse=not args.reverse)   # largest first (ls -S)
     else:
@@ -207,7 +213,7 @@ def main(argv: list[str]) -> int:
             # Leading one-char column, ls -F style: '*' marks a live session.
             mark = pal.open("*") if s.open else " "
             size = pal.dim("-".rjust(cs.SIZE_COL_W)) if s.deleted else \
-                pal.dim(cs.human_size_short(size_of(s)).rjust(cs.SIZE_COL_W))
+                pal.dim(size_fmt(size_of(s)).rjust(cs.SIZE_COL_W))
             ts = pal.dim(cs.format_time(time_key(s), now))
             print(f"{mark} {size}  {ts}  {pal.dir(cs.dirname(s.cwd))}  {name}")
         else:

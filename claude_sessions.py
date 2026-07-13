@@ -39,6 +39,7 @@ class Session:
     status: str | None = None      # 'busy'/'idle' reported by a live process
     deleted: bool = False          # referenced in .claude.json but log is gone
     last_meta: dict | None = None  # .claude.json last-run metrics, for deleted
+    latest_context: int | None = None  # tokens in the last request; None until scanned
 
     @property
     def display_name(self) -> str:
@@ -227,6 +228,33 @@ def find_session(sessions: list[Session], query: str) -> tuple[Session | None, l
     return None, sub
 
 
+def context_total(usage: dict) -> int:
+    """Total tokens fed to the model on one request = regular input + both cache
+    buckets. (Cache tokens usually dominate, since context is cached per turn.)"""
+    return (usage.get("input_tokens", 0)
+            + usage.get("cache_read_input_tokens", 0)
+            + usage.get("cache_creation_input_tokens", 0))
+
+
+def scan_latest_context(path: Path) -> int:
+    """Focused pass: the context size of the last main-thread request in a log.
+    Cheaper than analyze() — for populating the size column when listing."""
+    latest = 0
+    for line in path.open(encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("type") == "assistant" and not rec.get("isSidechain"):
+            u = (rec.get("message") or {}).get("usage")
+            if u:
+                latest = context_total(u)
+    return latest
+
+
 def analyze(session: Session) -> dict:
     """Second, deep pass over one log: counts, tokens, models, prompt previews."""
     user_prompts = 0
@@ -234,6 +262,7 @@ def analyze(session: Session) -> dict:
     asst_ids: set[str] = set()
     out_tokens: dict[str, int] = {}   # message.id -> max output_tokens seen
     context_peak = 0
+    latest_context = 0                # context of the last main-thread request
     models: dict[str, None] = {}      # first-seen order preserved
     branch = version = None
     first_prompt = last_prompt = None
@@ -278,9 +307,11 @@ def analyze(session: Session) -> dict:
             u = msg.get("usage") or {}
             if mid and "output_tokens" in u:
                 out_tokens[mid] = max(out_tokens.get(mid, 0), u["output_tokens"])
-            ctx = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
-                   + u.get("cache_creation_input_tokens", 0))
-            context_peak = max(context_peak, ctx)
+            if u:
+                ctx = context_total(u)
+                context_peak = max(context_peak, ctx)
+                if not rec.get("isSidechain"):
+                    latest_context = ctx   # overwritten in order -> last wins
             for b in msg.get("content", []):
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     tool_calls += 1
@@ -291,6 +322,7 @@ def analyze(session: Session) -> dict:
         "tool_calls": tool_calls,
         "output_tokens": sum(out_tokens.values()),
         "context_peak": context_peak,
+        "latest_context": latest_context,
         "models": list(models),
         "branch": branch,
         "version": version,
@@ -328,17 +360,44 @@ def path_size(p: Path) -> int:
 # ── formatting ─────────────────────────────────────────────────────────────
 
 DIR_WIDTH = 20  # fixed width so the dir column lines up in the long view
-LABEL_W = 13
+LABEL_W = 14    # widest label ("Latest context")
 ROW_PREFIX = 2 + LABEL_W + 2   # visible columns before a detail row's value
 SIZE_COL_W = 6                 # right-aligned width of the size column
 
-# Pluggable notions of a session's "size". Each entry: metric-key -> (detail
-# label, accessor over a Session). Add more here (e.g. tokens, message count)
-# and they become available to the size column, -S sorting, and --size.
-SIZE_METRICS: dict[str, tuple[str, "callable"]] = {
-    "log": ("Log size", lambda s: s.log_bytes),
+# Pluggable notions of a session's "size". `get` reads a value off a Session;
+# `expensive` marks metrics whose value requires parsing the log (populated by
+# ensure_sizes() before listing). `unit` picks the column/detail formatter
+# ("bytes" or "tokens"). Adding a metric = one registry entry + (for expensive
+# ones) a field on Session and a branch in ensure_sizes().
+@dataclass
+class SizeMetric:
+    label: str
+    get: "callable"
+    unit: str = "bytes"
+    expensive: bool = False
+
+
+SIZE_METRICS: dict[str, SizeMetric] = {
+    "log": SizeMetric("Log size", lambda s: s.log_bytes, unit="bytes"),
+    # Ready to enable once the -l cost is acceptable — the machinery below
+    # (ensure_sizes, Session.latest_context, scan_latest_context) already exists:
+    # "context": SizeMetric("Latest context", lambda s: s.latest_context or 0,
+    #                       unit="tokens", expensive=True),
 }
 DEFAULT_SIZE_METRIC = "log"
+
+
+def ensure_sizes(sessions: list[Session], metric: str) -> None:
+    """Populate whatever a size metric needs before it can be read. Cheap metrics
+    (log) are no-ops; expensive ones parse each log once. Call before sorting or
+    reading the size column."""
+    m = SIZE_METRICS[metric]
+    if not m.expensive:
+        return
+    if metric == "context":
+        for s in sessions:
+            if s.latest_context is None and s.path:
+                s.latest_context = scan_latest_context(s.path)
 
 
 def dirname(cwd: str | None) -> str:

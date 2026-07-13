@@ -78,6 +78,7 @@ Track down and fix the intermittent test failure
   Tool calls     0
   Tokens         ↓ 1.2k generated · ↑ 23.5k peak context
   Log size       25.5 KiB (26,143 B)
+  Latest context 23.5k tokens (23,472)
   Model          claude-opus-4-8
   Git branch     HEAD
   CLI version    2.1.197
@@ -93,6 +94,9 @@ Notes:
   the wrong directory is why `claude --resume <id>` reports "No conversation found".)
 - **Agent replies** counts distinct model responses (unique message IDs), not raw log
   records. **Tokens** are summed generated output and peak input context from usage data.
+- **Latest context** is how full the window was on the *last* request (input + both
+  cache buckets of the final main-thread `assistant` record) — distinct from the *peak*
+  on the Tokens line. Useful for gauging how heavy a session is to resume.
 - Prompt previews grow to fill a wider terminal.
 - **Removed sessions.** The detail view works for a removed session too (resolvable by
   UUID/name even without `-a`): log-only fields show `-`, while directory, duration,
@@ -134,8 +138,15 @@ Would remove session 8f3c1a92-4b7e-4c1d-9a2f-1e6d0b5c7a34  "Track down and fix t
 ## Size metrics
 
 Size is pluggable via the `SIZE_METRICS` registry in `claude_sessions.py`; `--size` and
-`-S` both read from it. Today the only metric is `log` (log-file bytes on disk), which is
-cheap — a `stat()` per file. Adding a metric is a one-line registry entry.
+`-S` both read from it. Today the only enabled metric is `log` (log-file bytes on disk),
+which is cheap — a `stat()` per file.
+
+A metric declares a `unit` (`bytes`/`tokens`) and whether it's `expensive` (needs the log
+parsed). Cheap metrics read a field off `Session`; expensive ones are filled by
+`ensure_sizes()` before listing. A `context` metric (latest post-prompt context size) is
+wired up and commented out in the registry — uncommenting it enables `--size context` for
+the column and `-S` sorting. It's left off by default because, unlike `log`, it must parse
+every log just to list.
 
 ## Layout
 
