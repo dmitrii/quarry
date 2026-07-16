@@ -156,6 +156,10 @@ provides the whole UI and the keybindings decide what happens to the session you
 | `ctrl-y` | copy its UUID to the clipboard |
 | `tab` | **widen the search scope**: `names` → `prompts` → `replies` |
 
+`enter` **refuses to resume a session that's currently open** in a live process (checked
+at resume time) — it prints a message and bails rather than risk a second attach. Deleting
+an open session via `ctrl-x` is likewise refused by `rm-claude`.
+
 The preview pane is `ls-claude <uuid>` (the detail view), live as you scroll. Matching is
 **exact-substring** (`fzf --exact`) — fuzzy subsequence matching is useless once the
 searchable text includes whole transcripts (any short query's letters appear *somewhere*

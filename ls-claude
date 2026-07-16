@@ -56,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "(names=title+AI title; prompts=+your prompts; replies=+agent text)")
     p.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                    help="when to colorize output (default: auto)")
+    # Internal predicate used by fzf-claude before resuming: exit 0 if the given
+    # session is open in a live process, 1 otherwise.
+    p.add_argument("--isopen", metavar="UUID", help=argparse.SUPPRESS)
     return p
 
 
@@ -181,6 +184,9 @@ def print_deleted_detail(s: cs.Session, pal: cs.Palette, width: int) -> None:
 def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     root = cs.config_dir()
+
+    if args.isopen:
+        return 0 if args.isopen in cs.live_sessions(root) else 1
 
     sessions = cs.discover(root)
     deleted = cs.deleted_sessions(root)

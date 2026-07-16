@@ -25,7 +25,7 @@ SELF="$DIR/$(basename "$src")"
 LS="$DIR/ls-claude"; [ -x "$LS" ] || LS="ls-claude"
 RM="$DIR/rm-claude"; [ -x "$RM" ] || RM="rm-claude"
 
-# Internal helpers invoked by fzf (reload/start). State = current scope, in $2.
+# Internal helpers invoked by fzf (reload/start/enter). State = scope file, in $2.
 case "${1:-}" in
   --_produce)
     exec "$LS" --tsv --scope "$(cat "$2" 2>/dev/null || echo names)" ;;
@@ -37,6 +37,14 @@ case "${1:-}" in
     esac
     printf '%s' "$n" > "$2"
     exec "$LS" --tsv --scope "$n" ;;
+  --_resume)  # $2=uuid $3=dir — refuse if that session is currently open
+    if "$LS" --isopen "$2"; then
+      printf 'Not resuming: session %s is open in a live claude process. Quit that tab first.\n' "$2" >&2
+      sleep 1.5   # keep the message on screen briefly (fzf has already exited)
+      exit 1
+    fi
+    cd "$3" 2>/dev/null || { echo "Not resuming: directory is gone: $3" >&2; exit 1; }
+    exec claude --resume "$2" ;;
 esac
 
 command -v fzf >/dev/null || { echo "fzf-claude: fzf is not installed (brew install fzf)" >&2; exit 127; }
@@ -54,4 +62,4 @@ FZF_DEFAULT_COMMAND="$SELF --_produce $STATE" fzf \
   --bind "tab:reload($SELF --_next $STATE)" \
   --bind "ctrl-x:execute($RM {1})+reload($SELF --_produce $STATE)" \
   --bind 'ctrl-y:execute-silent(printf %s {1} | pbcopy)' \
-  --bind 'enter:become(cd {3} && claude --resume {1})'
+  --bind "enter:become($SELF --_resume {1} {3})"
