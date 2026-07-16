@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# fzf-claude — interactively find a Claude Code session and resume it.
+#
+# Thin launcher: feeds `ls-claude --tsv` into fzf; the keybindings decide what
+# happens to the chosen session. fzf provides the entire UI.
+#   enter   resume it (cd to its dir, claude --resume)
+#   ctrl-x  remove it (rm-claude), then refresh the list
+#   ctrl-y  copy its UUID to the clipboard
+#   tab     widen the search scope: names -> prompts -> replies
+# The preview pane is `ls-claude <uuid>` (the detail view).
+#
+# fzf reads the list from FZF_DEFAULT_COMMAND rather than a pipe, so stdin stays
+# the terminal and `become` can hand it to the interactive `claude` session.
+set -euo pipefail
+
+# Resolve through symlinks to find sibling ls-claude / rm-claude.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  d="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in /*) ;; *) src="$d/$src" ;; esac
+done
+DIR="$(cd -P "$(dirname "$src")" && pwd)"
+SELF="$DIR/$(basename "$src")"
+LS="$DIR/ls-claude"; [ -x "$LS" ] || LS="ls-claude"
+RM="$DIR/rm-claude"; [ -x "$RM" ] || RM="rm-claude"
+
+# Internal helpers invoked by fzf (reload/start). State = current scope, in $2.
+case "${1:-}" in
+  --_produce)
+    exec "$LS" --tsv --scope "$(cat "$2" 2>/dev/null || echo names)" ;;
+  --_next)  # advance scope, then emit at the new scope
+    case "$(cat "$2" 2>/dev/null || echo names)" in
+      names)   n=prompts ;;
+      prompts) n=replies ;;
+      *)       n=names ;;
+    esac
+    printf '%s' "$n" > "$2"
+    exec "$LS" --tsv --scope "$n" ;;
+esac
+
+command -v fzf >/dev/null || { echo "fzf-claude: fzf is not installed (brew install fzf)" >&2; exit 127; }
+
+STATE="$(mktemp)"; printf 'names' > "$STATE"
+trap 'rm -f "$STATE"' EXIT
+
+FZF_DEFAULT_COMMAND="$SELF --_produce $STATE" fzf \
+  --exact \
+  --delimiter '\t' --with-nth '2..' \
+  --prompt 'session> ' \
+  --header 'enter resume · ctrl-x delete · ctrl-y copy uuid · tab widen scope (names→prompts→replies)' \
+  --preview "$LS --color always {1}" \
+  --preview-window 'right,55%,border-left,wrap' \
+  --bind "tab:reload($SELF --_next $STATE)" \
+  --bind "ctrl-x:execute($RM {1})+reload($SELF --_produce $STATE)" \
+  --bind 'ctrl-y:execute-silent(printf %s {1} | pbcopy)' \
+  --bind 'enter:become(cd {3} && claude --resume {1})'

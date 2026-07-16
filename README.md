@@ -7,6 +7,8 @@ invocations. Two commands:
 
 - **`ls-claude`** — list sessions, or show one in detail.
 - **`rm-claude`** — remove a session's on-disk artifacts (with confirmation).
+- **`fzf-claude`** — interactively find a session (fuzzy over names/prompts/replies) and
+  resume it. Requires [`fzf`](https://github.com/junegunn/fzf).
 
 ## Install
 
@@ -16,8 +18,9 @@ to find the module, so it can stay in the repo):
 
 ```sh
 mkdir -p ~/.local/bin
-ln -s "$PWD/ls-claude" ~/.local/bin/ls-claude
-ln -s "$PWD/rm-claude" ~/.local/bin/rm-claude
+ln -s "$PWD/ls-claude"  ~/.local/bin/ls-claude
+ln -s "$PWD/rm-claude"  ~/.local/bin/rm-claude
+ln -s "$PWD/fzf-claude" ~/.local/bin/fzf-claude   # needs `fzf` on PATH
 # ensure ~/.local/bin is on PATH (fish):
 fish_add_path ~/.local/bin
 ```
@@ -141,6 +144,40 @@ Would remove session 8f3c1a92-4b7e-4c1d-9a2f-1e6d0b5c7a34  "Track down and fix t
   2 item(s), 25.5 KiB (26,143 B)
 ```
 
+## `fzf-claude`
+
+Interactive picker. It's a thin launcher — `ls-claude --tsv` piped into `fzf` — so `fzf`
+provides the whole UI and the keybindings decide what happens to the session you pick:
+
+| key | action |
+|-----|--------|
+| `enter` | **resume** it (`cd <dir> && claude --resume <uuid>`) |
+| `ctrl-x` | **delete** it (`rm-claude`), then refresh the list |
+| `ctrl-y` | copy its UUID to the clipboard |
+| `tab` | **widen the search scope**: `names` → `prompts` → `replies` |
+
+The preview pane is `ls-claude <uuid>` (the detail view), live as you scroll. Matching is
+**exact-substring** (`fzf --exact`) — fuzzy subsequence matching is useless once the
+searchable text includes whole transcripts (any short query's letters appear *somewhere*
+in a 100k-token blob).
+
+**Scope** (cycled with `tab`) controls how much text is searchable, via
+`ls-claude --tsv --scope`:
+
+- `names` — session title + AI title (cheap; the default)
+- `prompts` — the above + everything you typed
+- `replies` — the above + the agent's text responses
+
+`prompts`/`replies` parse each log, so they're heavier than `names` — but only the picker
+uses them, on demand.
+
+`ls-claude --tsv` emits `UUID⇥label⇥dir⇥date⇥searchable` and is the machine-readable
+counterpart to the normal listing; you can pipe it into your own tools too.
+
+Resume is directory-scoped, so `enter` `cd`s into the session's launch directory first
+(fzf's `become` hands the terminal to `claude`). Removed sessions aren't listed (they
+can't be resumed); pass nothing special — it lists the same sessions `ls-claude` does.
+
 ## Size metrics
 
 Size is pluggable via the `SIZE_METRICS` registry in `claude_sessions.py`; `--size` and
@@ -157,8 +194,9 @@ every log just to list.
 ## Layout
 
 - `claude_sessions.py` — shared core: discovery, matching, log analysis, artifact listing,
-  and formatting. Both commands import it.
-- `ls-claude`, `rm-claude` — thin CLI front-ends.
+  and formatting. The Python commands import it.
+- `ls-claude`, `rm-claude` — thin Python CLI front-ends.
+- `fzf-claude` — thin shell launcher around `fzf` + `ls-claude --tsv`.
 
 ## Data source
 
@@ -170,13 +208,15 @@ when files are missing or unparseable.
 
 ## Possible improvements
 
-- **`-R` / `--resume <query>`** — resolve a query like the detail view, then either
-  *print* the exact `cd … && claude --resume …` (composable: `eval "$(ls-claude -R hawk)"`)
-  or *exec* it to jump straight back into the session. Print would be the safe default,
-  exec behind a second flag. Orthogonal to `-l`: `-l` is for browsing, `-R` for acting.
+- **`full-log` scope for `fzf-claude`** — a fourth scope that greps entire logs (tool
+  output included) via `rg`. Too big to preload like the others, so it'd use fzf's
+  reload-per-keystroke ripgrep pattern rather than preloaded exact matching.
 - **AI-title fallback in the listing** — for sessions with no custom name, show the
   (dimmed) AI title instead of the bare UUID, so unnamed sessions are readable at a glance.
-- **More size metrics** — e.g. `tokens` or `messages`, selectable via `--size`. Unlike
-  `log`, these require fully parsing every log just to list, so they'd be opt-in only.
+- **More size metrics** — e.g. `tokens` (latest context is already wired, commented out in
+  `SIZE_METRICS`) or `messages`, selectable via `--size`. These parse every log to list.
 - **Directory filter** — restrict the listing to sessions launched under a given path
   (mirroring how `claude --resume` is scoped), e.g. `ls-claude --cwd .`.
+- **Standalone `resume-claude <query>`** — resume by name/UUID without the picker (the old
+  `-R` idea, as its own command rather than a flag on `ls-claude`, which shouldn't launch
+  things). `fzf-claude`'s `enter` binding already covers the interactive case.

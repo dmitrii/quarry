@@ -276,6 +276,32 @@ def scan_latest_context(path: Path) -> int:
     return latest
 
 
+def scan_text(path: Path, include_replies: bool) -> str:
+    """Concatenate human prompt text (and, with include_replies, assistant text)
+    from a log into one searchable line — the content for --scope prompts/replies."""
+    parts: list[str] = []
+    for line in path.open(encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        t = rec.get("type")
+        if t == "user" and not rec.get("isMeta"):
+            c = (rec.get("message") or {}).get("content")
+            if isinstance(c, str):
+                parts.append(c)
+            elif isinstance(c, list):
+                parts += [b.get("text", "") for b in c
+                          if isinstance(b, dict) and b.get("type") == "text"]
+        elif t == "assistant" and include_replies and not rec.get("isSidechain"):
+            parts += [b.get("text", "") for b in (rec.get("message") or {}).get("content", [])
+                      if isinstance(b, dict) and b.get("type") == "text"]
+    return " ".join(" ".join(parts).split())
+
+
 def analyze(session: Session) -> dict:
     """Second, deep pass over one log: counts, tokens, models, prompt previews."""
     user_prompts = 0
@@ -419,6 +445,12 @@ def ensure_sizes(sessions: list[Session], metric: str) -> None:
         for s in sessions:
             if s.latest_context is None and s.path:
                 s.latest_context = scan_latest_context(s.path)
+
+
+def clean_line(s: str) -> str:
+    """Collapse all whitespace (incl. tabs/newlines) so a value is safe in one
+    tab-separated field."""
+    return " ".join(str(s).split())
 
 
 def dirname(cwd: str | None) -> str:

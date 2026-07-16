@@ -48,9 +48,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--size", choices=tuple(cs.SIZE_METRICS),
                    default=cs.DEFAULT_SIZE_METRIC,
                    help=f"which size to show/sort by (default: {cs.DEFAULT_SIZE_METRIC})")
+    p.add_argument("--tsv", action="store_true",
+                   help="machine-readable listing (UUID<TAB>label<TAB>dir<TAB>date"
+                        "<TAB>searchable) for piping into fzf-claude")
+    p.add_argument("--scope", choices=("names", "prompts", "replies"), default="names",
+                   help="how much text --tsv puts in the searchable column "
+                        "(names=title+AI title; prompts=+your prompts; replies=+agent text)")
     p.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                    help="when to colorize output (default: auto)")
     return p
+
+
+def emit_tsv(listing, time_key, scope):
+    for s in listing:
+        label = cs.clean_line(s.title or s.ai_title or s.uuid)
+        dirp = (s.cwd or "").replace("\t", " ").replace("\n", " ")
+        dt = time_key(s)
+        date = dt.astimezone().strftime("%Y-%m-%d %H:%M") if dt else ""
+        content = s.ai_title or ""
+        if scope in ("prompts", "replies") and s.path:
+            content = f"{content} {cs.scan_text(s.path, scope == 'replies')}"
+        print("\t".join((s.uuid, label, dirp, date, cs.clean_line(content))))
 
 
 def _row(pal, lbl, val):
@@ -197,6 +215,10 @@ def main(argv: list[str]) -> int:
         listing.sort(key=size_of, reverse=not args.reverse)   # largest first (ls -S)
     else:
         listing.sort(key=lambda s: time_key(s) or epoch, reverse=not args.reverse)
+
+    if args.tsv:
+        emit_tsv(listing, time_key, args.scope)
+        return 0
 
     if not listing:
         print("no Claude sessions found", file=sys.stderr)
