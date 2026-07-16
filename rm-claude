@@ -25,7 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Remove a Claude Code session's artifacts by UUID/prefix/name. "
                     "Only UUID-named files are deleted; no centralized files are edited.",
     )
-    p.add_argument("query", help="the session to remove (UUID, prefix, or name)")
+    p.add_argument("query", nargs="?",
+                   help="the session to remove (UUID, prefix, or name). "
+                        "If omitted, offers the last session run in the current directory.")
     p.add_argument("-f", "--force", action="store_true",
                    help="do not prompt for confirmation")
     p.add_argument("-n", "--dry-run", action="store_true",
@@ -43,18 +45,41 @@ def main(argv: list[str]) -> int:
     sessions = cs.discover(root)
     deleted = cs.deleted_sessions(root)
 
-    match, candidates = cs.find_session(sessions + deleted, args.query)
-    if match is None:
-        if candidates:
-            print(f"'{args.query}' is ambiguous — refusing to guess. Matches:",
+    note = None
+    if args.query is None:
+        # No-arg: offer the session Claude last ran in this directory — and ONLY
+        # that one. Never fall back to older sessions ("don't dig deeper").
+        cwd = os.getcwd()
+        sid = cs.project_last_session(root, cwd)
+        if not sid:
+            print(f"no session given and none recorded for {cwd}; "
+                  f"pass a UUID or name.", file=sys.stderr)
+            return 2
+        if args.force:
+            print("refusing to force-remove an inferred session; omit -f to "
+                  "confirm interactively, or name it explicitly.", file=sys.stderr)
+            return 2
+        match = next((s for s in sessions + deleted if s.uuid == sid), None)
+        if match is None:
+            print(f"last session for {cwd} ({sid}) is unknown; pass a UUID or name.",
                   file=sys.stderr)
-            for c in candidates:
-                print(f"  {c.uuid}  {c.title or c.ai_title or ''}", file=sys.stderr)
-        else:
-            print(f"no session matches '{args.query}'", file=sys.stderr)
-        return 1
+            return 1
+        note = f"No session given; offering the last one run in {cwd}:"
+    else:
+        match, candidates = cs.find_session(sessions + deleted, args.query)
+        if match is None:
+            if candidates:
+                print(f"'{args.query}' is ambiguous — refusing to guess. Matches:",
+                      file=sys.stderr)
+                for c in candidates:
+                    print(f"  {c.uuid}  {c.title or c.ai_title or ''}", file=sys.stderr)
+            else:
+                print(f"no session matches '{args.query}'", file=sys.stderr)
+            return 1
 
     label = match.title or match.ai_title or match.uuid
+    if note:
+        print(pal.dim(note))
 
     # Never delete artifacts for a session that's currently running.
     if match.open:

@@ -105,10 +105,10 @@ Notes:
 ## `rm-claude`
 
 ```
-rm-claude [-f] [-n] [--color {auto,always,never}] <query>
+rm-claude [-f] [-n] [--color {auto,always,never}] [query]
 ```
 
-Removes a session's on-disk artifacts, resolving `<query>` exactly as the detail view
+Removes a session's on-disk artifacts, resolving `query` exactly as the detail view
 does (ambiguous queries are **refused**, not guessed). It deletes only the files/dirs
 named after the UUID:
 
@@ -120,6 +120,12 @@ Centralized files (`history.jsonl`, `~/.claude.json`) are **left untouched** —
 orphaned references there are harmless, and this keeps `rm-claude` from ever rewriting
 shared state. (A session you remove therefore lingers as a grey `-a` entry until Claude
 next overwrites that directory's `lastSessionId`.)
+
+**No argument** — offers the session Claude **last ran in the current directory**
+(`~/.claude.json`'s `lastSessionId` for `$PWD`), so right after quitting a session you can
+just type `rm-claude`. It considers *only* that one session — never falling back to older
+ones — and declines cleanly if it's already removed or still running. `-f` is refused with
+no argument (an inferred target must be confirmed interactively).
 
 Safety:
 - **Refuses to remove a session that is currently open** in a live `claude` process.

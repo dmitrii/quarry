@@ -64,6 +64,31 @@ def claude_json_path(root: Path) -> Path | None:
     return None
 
 
+def load_claude_json(root: Path) -> dict:
+    cj = claude_json_path(root)
+    if cj is None:
+        return {}
+    try:
+        return json.loads(cj.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def project_last_session(root: Path, cwd: str) -> str | None:
+    """The `lastSessionId` .claude.json records for a directory — i.e. the
+    session Claude most recently ran there. Used as rm-claude's no-arg default."""
+    projects = load_claude_json(root).get("projects") or {}
+    pv = projects.get(cwd)                       # fast path: exact key
+    if isinstance(pv, dict) and pv.get("lastSessionId"):
+        return pv["lastSessionId"]
+    target = os.path.realpath(cwd)               # resolve symlinks (e.g. /tmp)
+    for key, pv in projects.items():
+        if (isinstance(pv, dict) and pv.get("lastSessionId")
+                and os.path.realpath(key) == target):
+            return pv["lastSessionId"]
+    return None
+
+
 def parse_ts(raw: str) -> datetime | None:
     # Timestamps look like 2026-07-10T14:05:08.451Z (UTC).
     try:
@@ -169,12 +194,8 @@ _LAST_META_KEYS = ("lastDuration", "lastCost", "lastTotalInputTokens",
 def deleted_sessions(root: Path) -> list[Session]:
     """Sessions referenced by .claude.json's per-directory `lastSessionId` whose
     log no longer exists — i.e. removed sessions Claude still points at."""
-    cj = claude_json_path(root)
-    if cj is None:
-        return []
-    try:
-        data = json.loads(cj.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    data = load_claude_json(root)
+    if not data:
         return []
     projects = root / "projects"
     existing = {p.stem for p in projects.glob("*/*.jsonl")} if projects.is_dir() else set()
