@@ -178,9 +178,12 @@ uses them, on demand.
 `ls-claude --tsv` emits `UUID⇥label⇥dir⇥date⇥searchable` and is the machine-readable
 counterpart to the normal listing; you can pipe it into your own tools too.
 
-Resume is directory-scoped, so `enter` `cd`s into the session's launch directory first
-(fzf's `become` hands the terminal to `claude`). Removed sessions aren't listed (they
-can't be resumed); pass nothing special — it lists the same sessions `ls-claude` does.
+Resume is directory-scoped, so on `enter` the wrapper `cd`s into the session's launch
+directory before `exec claude --resume`. The resume happens in the wrapper *after* fzf
+exits (fzf prints the selection; the script execs Claude) rather than via fzf's `become` —
+with `become` the resumed session renders but never receives keyboard input, because it
+doesn't inherit the terminal on stdin. Removed sessions aren't listed (they can't be
+resumed).
 
 ## Size metrics
 
