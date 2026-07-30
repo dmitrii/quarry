@@ -1,9 +1,11 @@
 # quarry
 
 Dig through your [Claude Code](https://claude.com/claude-code) session history from the
-terminal, following `ls`/`rm` conventions. `quarry` reads Claude's on-disk state under
-`$CLAUDE_CONFIG_DIR` (default `~/.claude`) and `~/.claude.json` — it never invokes Claude
-or any agent. One command, a few subcommands:
+terminal, following `ls`/`rm` conventions. `quarry` inspects Claude's on-disk state under
+`$CLAUDE_CONFIG_DIR` (default `~/.claude`) and `~/.claude.json` — listing, inspecting, and
+removing sessions only ever read files, never launching Claude or any agent. (Resuming is
+the one exception: `quarry fzf` and the detail view's `Resume` line hand off to
+`claude --resume`.) One command, a few subcommands:
 
 - **`quarry ls`** — list sessions, or show one in detail.
 - **`quarry rm`** — remove a session's on-disk artifacts (with confirmation).
