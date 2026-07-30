@@ -13,9 +13,11 @@ import sys
 
 __version__ = "0.1.0"
 
-# Resolve the symlink so sibling modules import when installed via a bin/ symlink.
-_HERE = os.path.dirname(os.path.realpath(__file__))
-sys.path.insert(0, _HERE)
+# Resolve the symlink (bin/ is a sibling of src/), then put src/ on the path so
+# the command modules import whether run in-tree or via a symlink on PATH.
+_BIN = os.path.dirname(os.path.realpath(__file__))
+_SRC = os.path.join(os.path.dirname(_BIN), "src")
+sys.path.insert(0, _SRC)
 
 import cmd_ls  # noqa: E402
 import cmd_rm  # noqa: E402
@@ -55,7 +57,7 @@ def run_fzf(argv: list[str]) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     ).parse_args(argv)
 
-    launcher = os.path.join(_HERE, "quarry-fzf")
+    launcher = os.path.join(_BIN, "quarry-fzf")
     if not os.path.exists(launcher):
         print(f"quarry: launcher not found: {launcher}", file=sys.stderr)
         return 1
