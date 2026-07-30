@@ -24,7 +24,7 @@ entry point onto your `PATH` (it resolves the symlink to find `src/`, so the rep
 put).
 
 ```sh
-git clone <repo-url> quarry && cd quarry
+git clone https://github.com/dmitrii/quarry.git && cd quarry
 make install               # symlink bin/quarry -> ~/.local/bin/quarry
 make install-completions   # fish autoloads; zsh/bash print the one rc line to add
 ```
