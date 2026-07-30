@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""rm-claude — remove a Claude Code session's on-disk artifacts, ls/rm-style.
+"""quarry rm — remove a session's on-disk artifacts, ls/rm-style.
 
 Deletes only the files/dirs named after the session UUID (the log, its sidecar
 subagents/tool-results dir, session-env, and file-history). Centralized files
@@ -21,8 +21,8 @@ import claude_sessions as cs  # noqa: E402
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="rm-claude",
-        description="Remove a Claude Code session's artifacts by UUID/prefix/name. "
+        prog="quarry rm",
+        description="Remove a session's artifacts by UUID/prefix/name. "
                     "Only UUID-named files are deleted; no centralized files are edited.",
     )
     p.add_argument("query", nargs="?",

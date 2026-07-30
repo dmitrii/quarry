@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# fzf-claude — interactively find a Claude Code session and resume it.
+# quarry-fzf — interactively find a session and resume it (launched by `quarry fzf`).
 #
-# Thin launcher: feeds `ls-claude --tsv` into fzf; the keybindings decide what
+# Thin launcher: feeds `quarry ls --tsv` into fzf; the keybindings decide what
 # happens to the chosen session. fzf provides the entire UI.
 #   enter   pick it -> the wrapper resumes it (cd to its dir, claude --resume)
-#   ctrl-x  remove it (rm-claude), then refresh the list
+#   ctrl-x  remove it (quarry rm), then refresh the list
 #   ctrl-y  copy its UUID to the clipboard
 #   tab     widen the search scope: names -> prompts -> replies
-# The preview pane is `ls-claude <uuid>` (the detail view).
+# The preview pane is `quarry ls <uuid>` (the detail view).
 #
 # fzf prints the selection and exits; THIS script (whose stdin is the terminal)
 # then execs claude. Doing the resume here rather than via fzf's `become` is what
@@ -15,7 +15,7 @@
 # never receives keyboard input.
 set -euo pipefail
 
-# Resolve through symlinks to find sibling ls-claude / rm-claude.
+# Resolve through symlinks to find the sibling quarry entry point.
 src="${BASH_SOURCE[0]}"
 while [ -L "$src" ]; do
   d="$(cd -P "$(dirname "$src")" && pwd)"
@@ -24,13 +24,16 @@ while [ -L "$src" ]; do
 done
 DIR="$(cd -P "$(dirname "$src")" && pwd)"
 SELF="$DIR/$(basename "$src")"
-LS="$DIR/ls-claude"; [ -x "$LS" ] || LS="ls-claude"
-RM="$DIR/rm-claude"; [ -x "$RM" ] || RM="rm-claude"
+
+# The quarry command: prefer $QUARRY (exported by `quarry fzf`), else the sibling
+# file, else whatever is on PATH.
+Q="${QUARRY:-}"
+[ -n "$Q" ] || { Q="$DIR/quarry"; [ -x "$Q" ] || Q="quarry"; }
 
 # Internal helpers invoked by fzf (start/reload). State = current scope, in $2.
 case "${1:-}" in
   --_produce)
-    exec "$LS" --tsv --scope "$(cat "$2" 2>/dev/null || echo names)" ;;
+    exec "$Q" ls --tsv --scope "$(cat "$2" 2>/dev/null || echo names)" ;;
   --_next)  # advance scope, then emit at the new scope
     case "$(cat "$2" 2>/dev/null || echo names)" in
       names)   n=prompts ;;
@@ -38,10 +41,10 @@ case "${1:-}" in
       *)       n=names ;;
     esac
     printf '%s' "$n" > "$2"
-    exec "$LS" --tsv --scope "$n" ;;
+    exec "$Q" ls --tsv --scope "$n" ;;
 esac
 
-command -v fzf >/dev/null || { echo "fzf-claude: fzf is not installed (brew install fzf)" >&2; exit 127; }
+command -v fzf >/dev/null || { echo "quarry fzf: fzf is not installed (brew install fzf)" >&2; exit 127; }
 
 STATE="$(mktemp)"; printf 'names' > "$STATE"
 trap 'rm -f "$STATE"' EXIT
@@ -54,10 +57,10 @@ line="$(
     --delimiter '\t' --with-nth '2..' \
     --prompt 'session> ' \
     --header 'enter resume · ctrl-x delete · ctrl-y copy uuid · tab widen scope (names→prompts→replies)' \
-    --preview "$LS --color always {1}" \
+    --preview "$Q ls --color always {1}" \
     --preview-window 'right,55%,border-left,wrap' \
     --bind "tab:reload($SELF --_next $STATE)" \
-    --bind "ctrl-x:execute($RM {1})+reload($SELF --_produce $STATE)" \
+    --bind "ctrl-x:execute($Q rm {1})+reload($SELF --_produce $STATE)" \
     --bind 'ctrl-y:execute-silent(printf %s {1} | pbcopy)'
 )" || exit 0
 [ -n "$line" ] || exit 0
@@ -66,7 +69,7 @@ uuid="${line%%$'\t'*}"
 dir="$(printf '%s' "$line" | cut -f3)"
 
 # Guard: never resume a session that's currently open in a live process.
-if "$LS" --isopen "$uuid"; then
+if "$Q" ls --isopen "$uuid"; then
   echo "Not resuming: session $uuid is open in a live claude process. Quit that tab first." >&2
   exit 1
 fi

@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""quarry — dig through your AI coding-assistant session history.
+
+A single dispatcher over a few subcommands. Each subcommand keeps its own
+argument parser, so `quarry <cmd> -h` shows that command's options verbatim.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+__version__ = "0.1.0"
+
+# Resolve the symlink so sibling modules import when installed via a bin/ symlink.
+_HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, _HERE)
+
+import cmd_ls  # noqa: E402
+import cmd_rm  # noqa: E402
+
+USAGE = """\
+quarry — dig through your AI coding-assistant session history.
+
+usage: quarry <command> [options]
+
+commands:
+  ls           list sessions (ls-style); pass a UUID/name for a detail view
+  rm           remove a session's on-disk artifacts
+  fzf          interactively pick a session and resume it (needs fzf)
+  completions  emit a shell completion script (fish | zsh | bash)
+
+Run 'quarry <command> -h' for command-specific options.
+"""
+
+
+FZF_KEYS = """\
+keys:
+  enter   resume the selected session (cd to its dir, claude --resume)
+  ctrl-x  remove the selected session (quarry rm), then refresh
+  ctrl-y  copy the selected session's UUID to the clipboard
+  tab     widen the search scope: names -> prompts -> replies
+The preview pane shows the `quarry ls <uuid>` detail view."""
+
+
+def run_fzf(argv: list[str]) -> int:
+    """Hand off to the fzf launcher, telling it where this quarry lives."""
+    # Parse (accepting no arguments) so -h works and typos are rejected like the
+    # other subcommands, rather than being forwarded to fzf as a query.
+    argparse.ArgumentParser(
+        prog="quarry fzf",
+        description="Interactively pick a session with fzf and resume it. Requires fzf.",
+        epilog=FZF_KEYS,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    ).parse_args(argv)
+
+    launcher = os.path.join(_HERE, "quarry-fzf")
+    if not os.path.exists(launcher):
+        print(f"quarry: launcher not found: {launcher}", file=sys.stderr)
+        return 1
+    env = dict(os.environ, QUARRY=os.path.realpath(__file__))
+    os.execve(launcher, [launcher, *argv], env)  # replaces this process
+
+
+def run_completions(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="quarry completions",
+        description="Emit a shell completion script to stdout. "
+                    "See the script's header for where to install it.",
+    )
+    p.add_argument("shell", choices=("fish", "zsh", "bash"))
+    args = p.parse_args(argv)
+    sys.stdout.write({"fish": FISH, "zsh": ZSH, "bash": BASH}[args.shell])
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        sys.stdout.write(USAGE)
+        return 0
+    if argv[0] in ("-V", "--version"):
+        print(f"quarry {__version__}")
+        return 0
+
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "ls":
+        return cmd_ls.main(rest)
+    if cmd == "rm":
+        return cmd_rm.main(rest)
+    if cmd == "fzf":
+        return run_fzf(rest)
+    if cmd == "completions":
+        return run_completions(rest)
+
+    print(f"quarry: unknown command '{cmd}'\n", file=sys.stderr)
+    sys.stderr.write(USAGE)
+    return 2
+
+
+# --------------------------------------------------------------------------- #
+# Shell completions
+#
+# fish is fully dynamic (session names/UUIDs come from `quarry ls --tsv`).
+# zsh/bash are intentionally static: subcommands + flags only, no session names.
+# --------------------------------------------------------------------------- #
+
+FISH = r"""# quarry fish completions.
+# Install: quarry completions fish > ~/.config/fish/completions/quarry.fish
+# (fish autoloads it; open a new shell or run `source` that file.)
+
+function __quarry_needs_command
+    set -l cmd (commandline -opc)
+    test (count $cmd) -eq 1
+end
+
+function __quarry_using_command
+    set -l cmd (commandline -opc)
+    test (count $cmd) -ge 2; and test "$cmd[2]" = "$argv[1]"
+end
+
+# Dynamic: emit "uuid\tlabel" for each session (guarded so it never recurses).
+function __quarry_sessions
+    command quarry ls --tsv 2>/dev/null | while read -l line
+        set -l parts (string split \t -- $line)
+        if test (count $parts) -ge 2
+            printf '%s\t%s\n' $parts[1] $parts[2]
+        end
+    end
+end
+
+complete -c quarry -f
+
+# Top-level commands.
+complete -c quarry -n __quarry_needs_command -a ls -d 'List sessions'
+complete -c quarry -n __quarry_needs_command -a rm -d 'Remove a session'
+complete -c quarry -n __quarry_needs_command -a fzf -d 'Interactive picker'
+complete -c quarry -n __quarry_needs_command -a completions -d 'Emit shell completions'
+
+# quarry ls
+complete -c quarry -n '__quarry_using_command ls' -s l -d 'long view'
+complete -c quarry -n '__quarry_using_command ls' -s a -d 'include removed sessions'
+complete -c quarry -n '__quarry_using_command ls' -s c -d 'sort by start time'
+complete -c quarry -n '__quarry_using_command ls' -s r -d 'reverse order'
+complete -c quarry -n '__quarry_using_command ls' -s t -d 'sort by time (default)'
+complete -c quarry -n '__quarry_using_command ls' -s S -d 'sort by size'
+complete -c quarry -n '__quarry_using_command ls' -l size -d 'size metric to show/sort by'
+complete -c quarry -n '__quarry_using_command ls' -l tsv -d 'machine-readable listing'
+complete -c quarry -n '__quarry_using_command ls' -l scope -x -a 'names prompts replies' -d 'search scope for --tsv'
+complete -c quarry -n '__quarry_using_command ls' -l color -x -a 'auto always never' -d 'when to colorize'
+complete -c quarry -n '__quarry_using_command ls' -a '(__quarry_sessions)' -d session
+
+# quarry rm
+complete -c quarry -n '__quarry_using_command rm' -s f -l force -d 'no confirmation'
+complete -c quarry -n '__quarry_using_command rm' -s n -l dry-run -d 'preview only'
+complete -c quarry -n '__quarry_using_command rm' -l color -x -a 'auto always never' -d 'when to colorize'
+complete -c quarry -n '__quarry_using_command rm' -a '(__quarry_sessions)' -d session
+
+# quarry completions
+complete -c quarry -n '__quarry_using_command completions' -f -a 'fish zsh bash'
+"""
+
+ZSH = r"""#compdef quarry
+# quarry zsh completions (static: subcommands + flags, no session names).
+# Install: quarry completions zsh > "${fpath[1]}/_quarry"   (a dir on your $fpath)
+# then start a new shell, or run: autoload -U compinit && compinit
+
+_quarry() {
+  local -a cmds
+  cmds=(
+    'ls:List sessions'
+    'rm:Remove a session'
+    'fzf:Interactive picker'
+    'completions:Emit shell completions'
+  )
+  if (( CURRENT == 2 )); then
+    _describe -t commands 'quarry command' cmds
+    return
+  fi
+  case "${words[2]}" in
+    ls)
+      _arguments \
+        '-l[long view]' '-a[include removed sessions]' '-c[sort by start time]' \
+        '-r[reverse order]' '-t[sort by time]' '-S[sort by size]' \
+        '--size=[size metric]' '--tsv[machine-readable listing]' \
+        '--scope=[search scope]:scope:(names prompts replies)' \
+        '--color=[when to colorize]:when:(auto always never)' \
+        '*:session:_default'
+      ;;
+    rm)
+      _arguments \
+        '(-f --force)'{-f,--force}'[no confirmation]' \
+        '(-n --dry-run)'{-n,--dry-run}'[preview only]' \
+        '--color=[when to colorize]:when:(auto always never)' \
+        '*:session:_default'
+      ;;
+    completions)
+      _values 'shell' fish zsh bash
+      ;;
+  esac
+}
+
+_quarry "$@"
+"""
+
+BASH = r"""# quarry bash completions (static: subcommands + flags, no session names).
+# Install: quarry completions bash > ~/.local/share/bash-completion/completions/quarry
+# or append to ~/.bashrc:  source <(quarry completions bash)
+
+_quarry() {
+  local cur sub
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  sub="${COMP_WORDS[1]}"
+  if [ "$COMP_CWORD" -eq 1 ]; then
+    COMPREPLY=( $(compgen -W "ls rm fzf completions" -- "$cur") )
+    return
+  fi
+  case "$sub" in
+    ls)
+      COMPREPLY=( $(compgen -W "-l -a -c -r -t -S --size --tsv --scope --color" -- "$cur") )
+      ;;
+    rm)
+      COMPREPLY=( $(compgen -W "-f --force -n --dry-run --color" -- "$cur") )
+      ;;
+    completions)
+      COMPREPLY=( $(compgen -W "fish zsh bash" -- "$cur") )
+      ;;
+  esac
+}
+complete -F _quarry quarry
+"""
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except BrokenPipeError:
+        # e.g. piped into `head`; exit quietly like ls does.
+        try:
+            sys.stdout.close()
+        finally:
+            os._exit(0)
+    except KeyboardInterrupt:
+        os._exit(130)

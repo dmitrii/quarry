@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ls-claude — list Claude Code sessions, ls-style.
+"""quarry ls — list sessions, ls-style.
 
 Lists sessions by custom title, or by UUID when untitled. Sorted by last
 interaction, most recent first (like `ls -t`); -c sorts by start time, -S by
@@ -27,8 +27,8 @@ import claude_sessions as cs  # noqa: E402
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="ls-claude",
-        description="List Claude Code sessions, sorted by time (ls-style). "
+        prog="quarry ls",
+        description="List sessions, sorted by time (ls-style). "
                     "Give a UUID (or prefix) or a name to show one session in detail.",
     )
     p.add_argument("query", nargs="?",
@@ -50,13 +50,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"which size to show/sort by (default: {cs.DEFAULT_SIZE_METRIC})")
     p.add_argument("--tsv", action="store_true",
                    help="machine-readable listing (UUID<TAB>label<TAB>dir<TAB>date"
-                        "<TAB>searchable) for piping into fzf-claude")
+                        "<TAB>searchable) for piping into `quarry fzf`")
     p.add_argument("--scope", choices=("names", "prompts", "replies"), default="names",
                    help="how much text --tsv puts in the searchable column "
                         "(names=title+AI title; prompts=+your prompts; replies=+agent text)")
     p.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                    help="when to colorize output (default: auto)")
-    # Internal predicate used by fzf-claude before resuming: exit 0 if the given
+    # Internal predicate used by `quarry fzf` before resuming: exit 0 if the given
     # session is open in a live process, 1 otherwise.
     p.add_argument("--isopen", metavar="UUID", help=argparse.SUPPRESS)
     return p
@@ -227,7 +227,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     if not listing:
-        print("no Claude sessions found", file=sys.stderr)
+        print("no sessions found", file=sys.stderr)
         return 0
 
     for s in listing:
