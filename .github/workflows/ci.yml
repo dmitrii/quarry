@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+
+      - name: Syntax check
+        run: |
+          python -m py_compile bin/quarry
+          python -m compileall -q src
+
+      - name: Smoke test
+        run: |
+          python bin/quarry --version
+          python bin/quarry ls -h
+          python bin/quarry rm -h
+          python bin/quarry fzf -h
+          for shell in fish zsh bash; do
+            python bin/quarry completions "$shell" > /dev/null
+          done
+
+      - name: shellcheck
+        run: shellcheck bin/quarry-fzf

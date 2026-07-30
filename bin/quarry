@@ -13,6 +13,13 @@ import sys
 
 __version__ = "0.1.0"
 
+# Nominative/descriptive use only (the tool reads Claude Code's own files); see
+# the README. Surfaced by --version and in the top-level help footer.
+DISCLAIMER = (
+    "Independent project, not affiliated with or endorsed by Anthropic.\n"
+    "Claude and Claude Code are trademarks of Anthropic, PBC."
+)
+
 # Resolve the symlink (bin/ is a sibling of src/), then put src/ on the path so
 # the command modules import whether run in-tree or via a symlink on PATH.
 _BIN = os.path.dirname(os.path.realpath(__file__))
@@ -22,7 +29,7 @@ sys.path.insert(0, _SRC)
 import cmd_ls  # noqa: E402
 import cmd_rm  # noqa: E402
 
-USAGE = """\
+USAGE = f"""\
 quarry — dig through your AI coding-assistant session history.
 
 usage: quarry <command> [options]
@@ -34,6 +41,8 @@ commands:
   completions  emit a shell completion script (fish | zsh | bash)
 
 Run 'quarry <command> -h' for command-specific options.
+
+{DISCLAIMER}
 """
 
 
@@ -83,6 +92,7 @@ def main(argv: list[str]) -> int:
         return 0
     if argv[0] in ("-V", "--version"):
         print(f"quarry {__version__}")
+        print(DISCLAIMER)
         return 0
 
     cmd, rest = argv[0], argv[1:]

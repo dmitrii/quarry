@@ -87,7 +87,8 @@ if "$Q" ls --isopen "$uuid"; then
   echo "Not resuming: session $uuid is open in a live claude process. Quit that tab first." >&2
   exit 1
 fi
-[ -n "$dir" ] && cd "$dir" 2>/dev/null || {
-  echo "Not resuming: launch directory unavailable: ${dir:-?}" >&2; exit 1
-}
+if [ -z "$dir" ] || ! cd "$dir" 2>/dev/null; then
+  echo "Not resuming: launch directory unavailable: ${dir:-?}" >&2
+  exit 1
+fi
 exec claude --resume "$uuid"
