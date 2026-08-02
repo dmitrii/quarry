@@ -101,7 +101,6 @@ def load_session(path: Path) -> Session | None:
     title = ai_title = None
     cwd = None
     lo = hi = None
-    saw_any = False
     with path.open(encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.strip()
@@ -111,7 +110,6 @@ def load_session(path: Path) -> Session | None:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            saw_any = True
             t = rec.get("type")
             if t == "custom-title":
                 title = rec.get("customTitle") or title
@@ -128,7 +126,11 @@ def load_session(path: Path) -> Session | None:
                         lo = ts
                     if hi is None or ts > hi:
                         hi = ts
-    if not saw_any:
+    # A real conversation log always carries a cwd and timestamps. Files with
+    # neither are metadata-only sidecars Claude writes beside real logs —
+    # summary/ai-title/agent-name records keyed to another session — not
+    # sessions in their own right.
+    if cwd is None and lo is None and hi is None:
         return None
     try:
         size = path.stat().st_size

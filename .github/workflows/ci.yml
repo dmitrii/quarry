@@ -31,5 +31,8 @@ jobs:
             python bin/quarry completions "$shell" > /dev/null
           done
 
+      - name: Unit tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
       - name: shellcheck
         run: shellcheck bin/quarry-fzf
