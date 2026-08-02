@@ -111,6 +111,7 @@ def print_detail(s: cs.Session, pal: cs.Palette, now: datetime, width: int) -> N
     _row(pal, "User prompts", str(stats["user_prompts"]))
     _row(pal, "Agent replies", str(stats["assistant_msgs"]))
     _row(pal, "Tool calls", str(stats["tool_calls"]))
+    _row(pal, "Sidechains", str(len(s.sidechains)))
     tok = (f"↓ {cs.human_tokens(stats['output_tokens'])} generated · "
            f"↑ {cs.human_tokens(stats['context_peak'])} peak context")
     _row(pal, "Tokens", tok)
@@ -243,7 +244,8 @@ def main(argv: list[str]) -> int:
             size = pal.dim("-".rjust(cs.SIZE_COL_W)) if s.deleted else \
                 pal.dim(size_fmt(size_of(s)).rjust(cs.SIZE_COL_W))
             ts = pal.dim(cs.format_time(time_key(s), now))
-            print(f"{mark} {size}  {ts}  {pal.dir(cs.dirname(s.cwd))}  {name}")
+            tail = pal.dim(f"  ↳{len(s.sidechains)}") if s.sidechains else ""
+            print(f"{mark} {size}  {ts}  {pal.dir(cs.dirname(s.cwd))}  {name}{tail}")
         else:
             print(name)
     return 0

@@ -43,7 +43,8 @@ quarry ls [-l] [-a] [-c] [-r] [-t] [-S] [--size {log}] [--color {auto,always,nev
 - `quarry ls` — one session per line: the session's name, or its UUID when it has no
   custom name. Sorted by **last interaction**, most recent first (like `ls -t`).
 - `-l` — long view. Columns: open marker, size, timestamp, launch directory
-  (fixed 20 chars), and name/UUID.
+  (fixed 20 chars), and name/UUID. A trailing **`↳N`** marks a session that spawned
+  `N` subagents (see below).
 - `-a` — also list **removed** sessions still referenced in `~/.claude.json` (in grey),
   like `ls -a` surfacing otherwise-hidden entries.
 - `-c` — sort by **start** time instead of last interaction.
@@ -56,6 +57,12 @@ quarry ls [-l] [-a] [-c] [-r] [-t] [-S] [--size {log}] [--color {auto,always,nev
 In `-l`, a leading **`*`** (bold green) marks a session that is **currently open** in a
 live `claude` process, determined from `$CLAUDE_CONFIG_DIR/sessions/<pid>.json` (the PID
 must still be alive; stale entries are ignored).
+
+**Subagents (sidechains).** When Claude spawns a subagent, its transcript is written to a
+separate `agent-*.jsonl` file whose records are all `isSidechain` and point back at the
+session that spawned them. These aren't resumable conversations of their own, so they're
+kept out of the listing; instead each parent shows a **`↳N`** count in `-l` and a
+**`Sidechains`** row in the detail view, and `quarry rm` removes them along with the parent.
 
 ```
 $ quarry ls -lS
@@ -119,12 +126,13 @@ quarry rm [-f] [-n] [--color {auto,always,never}] [query]
 ```
 
 Removes a session's on-disk artifacts, resolving `query` exactly as the detail view does
-(ambiguous queries are **refused**, not guessed). It deletes only the files/dirs named
-after the UUID:
+(ambiguous queries are **refused**, not guessed). It deletes the files/dirs named after
+the UUID, plus the session's subagent transcripts:
 
 - `projects/<encoded-cwd>/<uuid>.jsonl` and its `<uuid>/` sidecar dir
 - `session-env/<uuid>/`
 - `file-history/<uuid>/`
+- `projects/<encoded-cwd>/agent-*.jsonl` — the session's sidechain (subagent) transcripts
 
 Centralized files (`history.jsonl`, `~/.claude.json`) are **left untouched** — the
 orphaned references there are harmless, and this keeps `quarry rm` from ever rewriting

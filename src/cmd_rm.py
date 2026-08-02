@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """quarry rm — remove a session's on-disk artifacts, ls/rm-style.
 
-Deletes only the files/dirs named after the session UUID (the log, its sidecar
-subagents/tool-results dir, session-env, and file-history). Centralized files
-(history.jsonl, ~/.claude.json) are intentionally left untouched — orphaned
-references there are harmless. Refuses to touch a session that is currently
-open in a live `claude` process. Prompts before deleting (rm -i style).
+Deletes the files/dirs named after the session UUID (the log, its sidecar
+subagents/tool-results dir, session-env, and file-history) plus the session's
+subagent transcripts (agent-*.jsonl). Centralized files (history.jsonl,
+~/.claude.json) are intentionally left untouched — orphaned references there
+are harmless. Refuses to touch a session that is currently open in a live
+`claude` process. Prompts before deleting (rm -i style).
 """
 
 from __future__ import annotations

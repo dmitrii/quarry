@@ -8,6 +8,8 @@ Session state lives in a few places, all keyed by the session UUID:
   projects/<encoded-cwd>/<uuid>/        sidecar dir: subagents/, tool-results/
   session-env/<uuid>/                   per-session environment
   file-history/<uuid>/                  file-edit snapshots
+  projects/<encoded-cwd>/agent-*.jsonl  subagent transcripts, each tagged with
+                                        the sessionId that spawned it
 The live registry sessions/<pid>.json is keyed by PID, exists only while a
 session runs, and is what tells us a session is "open". ~/.claude.json holds a
 per-directory `lastSessionId` pointer plus that session's last-run metrics.
@@ -17,7 +19,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,6 +42,9 @@ class Session:
     deleted: bool = False          # referenced in .claude.json but log is gone
     last_meta: dict | None = None  # .claude.json last-run metrics, for deleted
     latest_context: int | None = None  # tokens in the last request; None until scanned
+    is_sidechain: bool = False     # a subagent transcript, not a top-level session
+    parent: str | None = None      # for a sidechain, the session it was spawned from
+    sidechains: list[Path] = field(default_factory=list)  # child sidechain logs
 
     @property
     def display_name(self) -> str:
@@ -101,6 +106,8 @@ def load_session(path: Path) -> Session | None:
     title = ai_title = None
     cwd = None
     lo = hi = None
+    session_id = None
+    saw_turn = saw_primary_turn = False
     with path.open(encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.strip()
@@ -115,6 +122,12 @@ def load_session(path: Path) -> Session | None:
                 title = rec.get("customTitle") or title
             elif t == "ai-title":
                 ai_title = rec.get("aiTitle") or ai_title
+            elif t in ("user", "assistant"):
+                saw_turn = True
+                if not rec.get("isSidechain"):
+                    saw_primary_turn = True
+            if session_id is None and rec.get("sessionId"):
+                session_id = rec["sessionId"]
             # First cwd seen = the launch directory; later records drift as tools cd.
             if cwd is None and rec.get("cwd"):
                 cwd = rec["cwd"]
@@ -132,12 +145,17 @@ def load_session(path: Path) -> Session | None:
     # sessions in their own right.
     if cwd is None and lo is None and hi is None:
         return None
+    # A transcript with only isSidechain turns is a subagent spawned from
+    # another session (its sessionId), not a resumable conversation itself.
+    is_sidechain = saw_turn and not saw_primary_turn
     try:
         size = path.stat().st_size
     except OSError:
         size = 0
     return Session(uuid=path.stem, title=title, cwd=cwd, started=lo, last=hi,
-                   ai_title=ai_title, path=path, log_bytes=size)
+                   ai_title=ai_title, path=path, log_bytes=size,
+                   is_sidechain=is_sidechain,
+                   parent=session_id if is_sidechain else None)
 
 
 def live_sessions(root: Path) -> dict[str, dict]:
@@ -176,7 +194,7 @@ def live_sessions(root: Path) -> dict[str, dict]:
 # served from the cache without being reopened. The cache is a pure
 # optimization — any read/write error just falls back to a live parse.
 
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 
 
 def cache_file() -> Path:
@@ -219,7 +237,8 @@ def _entry_from_session(s: Session | None, size: int, mtime: int) -> dict:
         e.update(title=s.title, ai_title=s.ai_title, cwd=s.cwd,
                  started=s.started.isoformat() if s.started else None,
                  last=s.last.isoformat() if s.last else None,
-                 log_bytes=s.log_bytes)
+                 log_bytes=s.log_bytes,
+                 is_sidechain=s.is_sidechain, parent=s.parent)
     return e
 
 
@@ -230,7 +249,8 @@ def _session_from_entry(path: Path, e: dict) -> Session | None:
         uuid=path.stem, title=e.get("title"), cwd=e.get("cwd"),
         started=parse_ts(e["started"]) if e.get("started") else None,
         last=parse_ts(e["last"]) if e.get("last") else None,
-        ai_title=e.get("ai_title"), path=path, log_bytes=e.get("log_bytes", 0))
+        ai_title=e.get("ai_title"), path=path, log_bytes=e.get("log_bytes", 0),
+        is_sidechain=e.get("is_sidechain", False), parent=e.get("parent"))
 
 
 def discover(root: Path) -> list[Session]:
@@ -243,6 +263,7 @@ def discover(root: Path) -> list[Session]:
     seen: set[str] = set()
     dirty = False
     sessions = []
+    children: dict[str, list[Path]] = {}   # parent uuid -> its sidechain logs
     for jsonl in projects.glob("*/*.jsonl"):
         if not jsonl.is_file():
             continue
@@ -260,11 +281,18 @@ def discover(root: Path) -> list[Session]:
         s = _session_from_entry(jsonl, e)
         if s is None:
             continue
+        if s.is_sidechain:
+            # Not a session of its own; tallied to the parent it was spawned from.
+            if s.parent:
+                children.setdefault(s.parent, []).append(jsonl)
+            continue
         if s.uuid in live:
             s.open = True
             s.pid = live[s.uuid]["pid"]
             s.status = live[s.uuid]["status"]
         sessions.append(s)
+    for s in sessions:
+        s.sidechains = sorted(children.get(s.uuid, []))
     # Drop entries for logs that no longer exist (checking the path, so caches
     # shared across config roots keep each other's still-present entries).
     for key in [k for k in cache if k not in seen and not os.path.exists(k)]:
@@ -471,8 +499,10 @@ def analyze(session: Session) -> dict:
 def artifacts(root: Path, session: Session) -> list[Path]:
     """Every on-disk artifact belonging to a session (existing paths only).
 
-    All are named by the UUID, so removal is a straight delete — no centralized
-    file is edited. history.jsonl / .claude.json references are left untouched.
+    The session's own files are named by its UUID; its subagent transcripts
+    (agent-*.jsonl) are named independently but belong to it, so they go too.
+    Removal is a straight delete — no centralized file is edited. history.jsonl
+    / .claude.json references are left untouched.
     """
     paths: list[Path] = []
     if session.path:
@@ -480,6 +510,7 @@ def artifacts(root: Path, session: Session) -> list[Path]:
         paths.append(session.path.parent / session.uuid)  # sidecar dir
     paths.append(root / "session-env" / session.uuid)
     paths.append(root / "file-history" / session.uuid)
+    paths += session.sidechains                        # subagent transcripts
     return [p for p in paths if p.exists()]
 
 
