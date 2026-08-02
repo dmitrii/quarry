@@ -168,23 +168,110 @@ def live_sessions(root: Path) -> dict[str, dict]:
     return live
 
 
+# ── discovery cache ──────────────────────────────────────────────────────
+#
+# Parsing every log on every listing is the dominant cost (each is read and
+# JSON-decoded line by line). Logs are append-only and mostly dormant, so we
+# memoize load_session()'s result keyed by (size, mtime): an unchanged file is
+# served from the cache without being reopened. The cache is a pure
+# optimization — any read/write error just falls back to a live parse.
+
+_CACHE_VERSION = 1
+
+
+def cache_file() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME")
+    root = Path(base) if base else Path.home() / ".cache"
+    return root / "quarry" / "index.json"
+
+
+def _stat_key(path: Path) -> tuple[int, int]:
+    st = path.stat()
+    return st.st_size, st.st_mtime_ns
+
+
+def load_cache() -> dict:
+    try:
+        data = json.loads(cache_file().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if data.get("version") != _CACHE_VERSION:
+        return {}
+    entries = data.get("entries")
+    return entries if isinstance(entries, dict) else {}
+
+
+def save_cache(entries: dict) -> None:
+    f = cache_file()
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name(f.name + ".tmp")
+        tmp.write_text(json.dumps({"version": _CACHE_VERSION, "entries": entries}),
+                       encoding="utf-8")
+        tmp.replace(f)  # atomic swap so a concurrent reader never sees a partial file
+    except OSError:
+        pass
+
+
+def _entry_from_session(s: Session | None, size: int, mtime: int) -> dict:
+    e = {"size": size, "mtime": mtime, "session": s is not None}
+    if s is not None:
+        e.update(title=s.title, ai_title=s.ai_title, cwd=s.cwd,
+                 started=s.started.isoformat() if s.started else None,
+                 last=s.last.isoformat() if s.last else None,
+                 log_bytes=s.log_bytes)
+    return e
+
+
+def _session_from_entry(path: Path, e: dict) -> Session | None:
+    if not e.get("session"):
+        return None
+    return Session(
+        uuid=path.stem, title=e.get("title"), cwd=e.get("cwd"),
+        started=parse_ts(e["started"]) if e.get("started") else None,
+        last=parse_ts(e["last"]) if e.get("last") else None,
+        ai_title=e.get("ai_title"), path=path, log_bytes=e.get("log_bytes", 0))
+
+
 def discover(root: Path) -> list[Session]:
     """All sessions with an on-disk log, annotated with live-process state."""
     projects = root / "projects"
     if not projects.is_dir():
         return []
     live = live_sessions(root)
+    cache = load_cache()
+    seen: set[str] = set()
+    dirty = False
     sessions = []
     for jsonl in projects.glob("*/*.jsonl"):
         if not jsonl.is_file():
             continue
-        s = load_session(jsonl)
-        if s is not None:
-            if s.uuid in live:
-                s.open = True
-                s.pid = live[s.uuid]["pid"]
-                s.status = live[s.uuid]["status"]
-            sessions.append(s)
+        key = str(jsonl)
+        seen.add(key)
+        try:
+            size, mtime = _stat_key(jsonl)
+        except OSError:
+            continue
+        e = cache.get(key)
+        if not (isinstance(e, dict) and e.get("size") == size and e.get("mtime") == mtime):
+            e = _entry_from_session(load_session(jsonl), size, mtime)
+            cache[key] = e
+            dirty = True
+        s = _session_from_entry(jsonl, e)
+        if s is None:
+            continue
+        if s.uuid in live:
+            s.open = True
+            s.pid = live[s.uuid]["pid"]
+            s.status = live[s.uuid]["status"]
+        sessions.append(s)
+    # Drop entries for logs that no longer exist (checking the path, so caches
+    # shared across config roots keep each other's still-present entries).
+    for key in [k for k in cache if k not in seen and not os.path.exists(k)]:
+        del cache[key]
+        dirty = True
+    if dirty:
+        save_cache(cache)
     return sessions
 
 
