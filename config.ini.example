@@ -24,7 +24,7 @@ default_template = ${AI_TITLE:-$SUMMARY}
 # $SUMMARY generator. Contract: quarry pipes session context to this command's
 # stdin; the command prints the title to stdout. Edit freely (model, effort,
 # wording). The default reuses your Claude Code auth and leaves no session on disk.
-summary_command = claude -p --no-session-persistence --model haiku --effort low --tools "" --system-prompt "You output ONLY a 3-8 word lowercase kebab-case slug summarizing the session topic. Do not include the project, repo, or tool name. No dates, no quotes, no punctuation, no explanation."
+summary_command = claude -p --no-session-persistence --model sonnet --effort medium --tools "" --system-prompt "You output ONLY a 3-8 word lowercase kebab-case slug summarizing the session topic. Do not include the project, repo, or tool name. No dates, no quotes, no punctuation, no explanation."
 
 # Max characters of session context fed to summary_command (a cost knob).
 summary_context_chars = 8000

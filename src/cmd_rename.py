@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import os
+import re
 import readline  # noqa: F401  (importing enables line editing on input())
+import shlex
 import shutil
 import sys
 import threading
@@ -66,6 +68,16 @@ def resolve_targets(sessions, selector, retitle, root, cwd):
     return [s for s in matched if not s.named]
 
 
+def _command_name(command: str) -> str:
+    """The program name of a summary_command, for progress display."""
+    try:
+        first = shlex.split(command)[0]
+    except (ValueError, IndexError):
+        parts = command.split()
+        first = parts[0] if parts else "command"
+    return os.path.basename(first) or "command"
+
+
 def _generate_summary(session, cfg):
     """cs.generate_summary, with a live progress line while the (possibly
     multi-second) command runs — but only on an interactive terminal, so tests
@@ -82,7 +94,8 @@ def _generate_summary(session, cfg):
 
     t = threading.Thread(target=work)
     t.start()
-    sys.stderr.write("  generating a name proposal")
+    sys.stderr.write(f"  invoking '{_command_name(cfg.summary_command)}' to generate "
+                     f"a name proposal")
     sys.stderr.flush()
     while True:
         t.join(timeout=1.0)
@@ -97,15 +110,22 @@ def _generate_summary(session, cfg):
     return result["value"]
 
 
+def _apply_model_override(command: str, model: str | None) -> str:
+    """Swap the model in a summary_command (or append one if it has none)."""
+    if not model:
+        return command
+    new, n = re.subn(r"--model\s+\S+", f"--model {model}", command, count=1)
+    return new if n else f"{command} --model {model}"
+
+
 def _resolver(session, cfg, model):
     """Build a lazy variable resolver for one session: free vars are instant,
     $SUMMARY shells out (only when actually reached during rendering)."""
     cache = {}
-    cmd = cfg.summary_command
-    if model:
-        cmd = cmd.replace("--model haiku", f"--model {model}")
-    live = cs.RenameConfig(cfg.default_template, cmd,
-                           cfg.summary_context_chars, cfg.summary_timeout_secs)
+    live = cs.RenameConfig(cfg.default_template,
+                           _apply_model_override(cfg.summary_command, model),
+                           cfg.summary_context_chars, cfg.summary_timeout_secs,
+                           cfg.summary_max_words)
 
     def resolve(name):
         if name in cache:

@@ -292,6 +292,25 @@ class EndToEndApplyTests(unittest.TestCase):
             self.assertEqual(cs.load_session(p).title, "quarry-fixed-flaky-test")
 
 
+class CommandHelperTests(unittest.TestCase):
+    def test_model_override_replaces_existing(self):
+        self.assertEqual(
+            cmd_rename._apply_model_override("claude -p --model sonnet --tools ''", "opus"),
+            "claude -p --model opus --tools ''")
+
+    def test_model_override_appends_when_absent(self):
+        self.assertEqual(cmd_rename._apply_model_override("mytool --flag", "opus"),
+                         "mytool --flag --model opus")
+
+    def test_model_override_noop_without_model(self):
+        self.assertEqual(cmd_rename._apply_model_override("x --model sonnet", None),
+                         "x --model sonnet")
+
+    def test_command_name(self):
+        self.assertEqual(cmd_rename._command_name("claude -p --model sonnet"), "claude")
+        self.assertEqual(cmd_rename._command_name("/usr/local/bin/mytool --x"), "mytool")
+
+
 class GenerateProgressTests(unittest.TestCase):
     def test_wrapper_delegates_without_tty(self):
         with TemporaryDirectory() as td:

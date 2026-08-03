@@ -435,7 +435,7 @@ def load_search_config() -> SearchConfig:
 # config.ini.example mirrors them.
 
 DEFAULT_SUMMARY_COMMAND = (
-    'claude -p --no-session-persistence --model haiku --effort low --tools "" '
+    'claude -p --no-session-persistence --model sonnet --effort medium --tools "" '
     '--system-prompt "You output ONLY a 3-8 word lowercase kebab-case slug '
     'summarizing the session topic. Do not include the project, repo, or tool '
     'name. No dates, no quotes, no punctuation, no explanation."'
