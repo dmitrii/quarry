@@ -234,12 +234,19 @@ class DryRunTests(unittest.TestCase):
 
 
 class PromptTitleTests(unittest.TestCase):
-    def test_accept_returns_edited(self):
+    def test_replacement_text_used(self):
         self.assertEqual(cmd_rename.prompt_title("proposed", read=lambda p: "edited"),
                          "edited")
 
-    def test_empty_input_skips(self):
-        self.assertIsNone(cmd_rename.prompt_title("proposed", read=lambda p: "   "))
+    def test_empty_accepts_proposed(self):
+        self.assertEqual(cmd_rename.prompt_title("proposed", read=lambda p: "   "),
+                         "proposed")
+
+    def test_dash_skips(self):
+        self.assertIsNone(cmd_rename.prompt_title("proposed", read=lambda p: "-"))
+
+    def test_empty_with_no_proposal_skips(self):
+        self.assertIsNone(cmd_rename.prompt_title("", read=lambda p: ""))
 
     def test_ctrl_c_propagates(self):
         def boom(p):

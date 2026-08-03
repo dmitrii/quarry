@@ -113,21 +113,18 @@ def main(argv: list[str]) -> int:
 
 
 def prompt_title(proposed: str, read=input) -> str | None:
-    """Show `proposed` in an editable line; return the accepted/edited title, or
-    None to skip (empty submission). KeyboardInterrupt propagates (abort batch)."""
-    def prefill():
-        readline.insert_text(proposed)
-        readline.redisplay()
-    hook = getattr(readline, "set_pre_input_hook", None)
-    if hook and read is input:
-        hook(prefill)
-    try:
-        answer = read("  title (Enter=accept, empty=skip, Ctrl-C=abort): ")
-    finally:
-        if hook and read is input:
-            hook(None)
-    answer = (answer or "").strip()
-    return answer or None
+    """Read the user's decision for a pre-printed proposal. Empty input accepts
+    `proposed`; a lone '-' skips (returns None); any other text becomes the
+    title (line-edited via readline). Returns None when nothing usable remains.
+    KeyboardInterrupt propagates so the caller can abort the batch.
+
+    Backend-agnostic on purpose: it does not rely on readline prefill (which is
+    unreliable under macOS's editline), so the proposal is printed by the caller
+    and Enter accepts it rather than submitting a prefilled buffer."""
+    answer = (read("  title [Enter=accept · type to replace · '-'=skip]: ") or "").strip()
+    if answer == "-":
+        return None
+    return answer or proposed or None
 
 
 def _run_interactive(targets, template, cfg, model, pal) -> int:
@@ -142,6 +139,7 @@ def _run_interactive(targets, template, cfg, model, pal) -> int:
         except RuntimeError as e:
             print(pal.warn(f"  summary generation failed: {e}"), file=sys.stderr)
             proposed = ""
+        print(f"  proposed: {pal.head(proposed) if proposed else pal.dim('(none)')}")
         try:
             chosen = prompt_title(proposed)
         except KeyboardInterrupt:

@@ -170,9 +170,9 @@ quarry rename [-t TEMPLATE] [--retitle] [-n] [--model M] [--color {auto,always,n
 Sets session **titles** — the name `/rename` sets — from a template, so a year of
 UUID-named sessions can be titled without resuming each one. It writes the title exactly
 as Claude Code does: a `custom-title` record appended to the session's transcript (nothing
-else is touched). Each session is shown in detail, then its proposed title is offered in an
-**editable prompt**: **Enter** accepts (edit first if you like), an **empty line** skips it,
-**Ctrl-C** aborts the batch.
+else is touched). Each session is shown in detail with its proposed title, then a prompt: **Enter** accepts
+it, **type a new title** to replace it, **`-`** skips this session, **Ctrl-C** aborts the
+batch.
 
 - **selector** — a UUID/prefix or shell glob matched against each session's UUID **or**
   current name. **Omit it** to target the last session run in the current directory (like
