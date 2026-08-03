@@ -469,6 +469,86 @@ def load_rename_config() -> RenameConfig:
         return cfg
 
 
+def slugify(text: str) -> str:
+    """Lowercase kebab slug: alphanumeric runs joined by single hyphens."""
+    out, gap = [], False
+    for ch in text.lower():
+        if ch.isalnum():
+            out.append(ch)
+            gap = False
+        elif not gap:
+            out.append("-")
+            gap = True
+    return "".join(out).strip("-")
+
+
+def normalize_title(text: str) -> str:
+    """Final title cleanup: strip surrounding quotes/space, whitespace -> '-',
+    collapse repeated/edge separators. Case is preserved (no convention forced)."""
+    t = " ".join(text.split()).strip().strip("'\"")
+    t = "-".join(t.split(" "))
+    while "--" in t:
+        t = t.replace("--", "-")
+    return t.strip("-")
+
+
+def date_ymd(dt: datetime | None) -> str:
+    return dt.astimezone().strftime("%Y-%m-%d") if dt else ""
+
+
+def git_project(cwd: str | None) -> str:
+    """Basename of the nearest ancestor containing a .git, else ''."""
+    if not cwd:
+        return ""
+    p = Path(cwd)
+    for d in (p, *p.parents):
+        if (d / ".git").exists():
+            return d.name
+    return ""
+
+
+def session_branch(session: Session) -> str:
+    """First gitBranch recorded in the log (lazy scan; '' if none)."""
+    if not session.path:
+        return ""
+    try:
+        with session.path.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if '"gitBranch"' not in line:
+                    continue
+                try:
+                    b = json.loads(line).get("gitBranch")
+                except json.JSONDecodeError:
+                    continue
+                if b:
+                    return b
+    except OSError:
+        pass
+    return ""
+
+
+def free_variable(session: Session, name: str) -> str | None:
+    """Value for an instant/offline template variable, or None if `name` is not
+    one (e.g. SUMMARY, which requires generation)."""
+    if name == "START_DATE":
+        return date_ymd(session.started)
+    if name == "LAST_ACTIVITY_DATE":
+        return date_ymd(session.last)
+    if name == "LAUNCH_DIR":
+        return os.path.basename(os.path.normpath(session.cwd)) if session.cwd else ""
+    if name == "GIT_PROJECT":
+        return git_project(session.cwd)
+    if name == "BRANCH":
+        return slugify(session_branch(session))
+    if name == "UUID":
+        return session.uuid
+    if name == "UUID8":
+        return session.uuid[:8]
+    if name == "AI_TITLE":
+        return slugify(session.ai_title or "")
+    return None
+
+
 def scan_text(path: Path, *, replies: bool, thinking: bool = False,
               include_sidechain: bool = False) -> str:
     """Concatenate a log's searchable text into one line — the content behind

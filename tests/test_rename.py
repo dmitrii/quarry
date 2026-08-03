@@ -7,6 +7,7 @@ import configparser
 import os
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -68,6 +69,36 @@ class ConfigExampleSyncTests(unittest.TestCase):
                          d.summary_context_chars)
         self.assertEqual(p.getint("rename", "summary_timeout_secs"),
                          d.summary_timeout_secs)
+
+
+class HelperTests(unittest.TestCase):
+    def test_slugify(self):
+        self.assertEqual(cs.slugify("Clean up: Worktrees, demo!"), "clean-up-worktrees-demo")
+        self.assertEqual(cs.slugify(""), "")
+
+    def test_normalize_title_collapses_and_preserves_case(self):
+        self.assertEqual(cs.normalize_title("2026-08-02--Fix  thing"), "2026-08-02-Fix-thing")
+        self.assertEqual(cs.normalize_title('  "quoted"  '), "quoted")
+
+    def test_git_project(self):
+        with TemporaryDirectory() as td:
+            repo = Path(td) / "MyRepo"
+            (repo / "sub").mkdir(parents=True)
+            (repo / ".git").mkdir()
+            self.assertEqual(cs.git_project(str(repo / "sub")), "MyRepo")
+            self.assertEqual(cs.git_project(str(Path(td))), "")
+
+    def test_free_variable(self):
+        s = cs.Session(uuid="d0809692-f479-402f-b302-4c880634577a", title=None,
+                       cwd="/Users/x/Code/quarry",
+                       started=datetime(2025, 8, 12, 12, 0, tzinfo=timezone.utc),
+                       last=datetime(2025, 8, 19, 12, 0, tzinfo=timezone.utc),
+                       ai_title="Fix the Flaky Test")
+        self.assertEqual(cs.free_variable(s, "LAUNCH_DIR"), "quarry")
+        self.assertEqual(cs.free_variable(s, "UUID8"), "d0809692")
+        self.assertEqual(cs.free_variable(s, "AI_TITLE"), "fix-the-flaky-test")
+        self.assertEqual(cs.free_variable(s, "START_DATE"), "2025-08-12")
+        self.assertIsNone(cs.free_variable(s, "SUMMARY"))
 
 
 if __name__ == "__main__":
