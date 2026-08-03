@@ -130,5 +130,37 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("SUMMARY", log)  # generator never consulted
 
 
+class GenerateSummaryTests(unittest.TestCase):
+    def _session(self, td):
+        d = Path(td) / "projects" / "-Users-x-Code-real"
+        d.mkdir(parents=True)
+        p = d / "s.jsonl"
+        p.write_text(
+            '{"type":"user","cwd":"/x","timestamp":"2025-08-12T10:00:00.000Z",'
+            '"message":{"role":"user","content":"Fix the Flaky Test please"}}\n',
+            encoding="utf-8")
+        return cs.Session(uuid="u", title=None, cwd="/x", started=None, last=None, path=p)
+
+    def test_pipes_context_and_slugifies_output(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td)
+            cfg = cs.RenameConfig(summary_command="head -c 8")  # -> "Fix the "
+            self.assertEqual(cs.generate_summary(s, cfg), "fix-the")
+
+    def test_empty_output_raises(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td)
+            cfg = cs.RenameConfig(summary_command="true")  # no output
+            with self.assertRaises(RuntimeError):
+                cs.generate_summary(s, cfg)
+
+    def test_nonzero_exit_raises(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td)
+            cfg = cs.RenameConfig(summary_command="false")
+            with self.assertRaises(RuntimeError):
+                cs.generate_summary(s, cfg)
+
+
 if __name__ == "__main__":
     unittest.main()

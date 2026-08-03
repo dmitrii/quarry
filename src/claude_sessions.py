@@ -20,6 +20,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -586,6 +587,28 @@ def render_template(template: str, resolve) -> str:
         return "".join(out)
 
     return normalize_title(render(template))
+
+
+def generate_summary(session: Session, cfg: RenameConfig) -> str:
+    """Produce $SUMMARY by piping the session's user-prompt context to
+    cfg.summary_command on stdin and slugifying its stdout. Raises RuntimeError
+    on failure so the caller can fall back to manual entry."""
+    assert session.path is not None
+    context = scan_text(session.path, replies=False)[: cfg.summary_context_chars]
+    try:
+        proc = subprocess.run(
+            cfg.summary_command, shell=True, input=context,
+            capture_output=True, text=True, timeout=cfg.summary_timeout_secs)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"summary_command timed out after "
+                           f"{cfg.summary_timeout_secs}s") from e
+    if proc.returncode != 0:
+        raise RuntimeError(f"summary_command exited {proc.returncode}: "
+                           f"{proc.stderr.strip()[:200]}")
+    title = slugify(proc.stdout)
+    if not title:
+        raise RuntimeError("summary_command produced no usable title")
+    return title
 
 
 def scan_text(path: Path, *, replies: bool, thinking: bool = False,
