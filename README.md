@@ -27,6 +27,7 @@ put).
 git clone https://github.com/dmitrii/quarry.git && cd quarry
 make install               # symlink bin/quarry -> ~/.local/bin/quarry
 make install-completions   # fish autoloads; zsh/bash print the one rc line to add
+make install-config        # optional: starter config.ini (won't clobber an existing one)
 ```
 
 Override locations with `PREFIX=` / `BINDIR=` etc. (`make help` lists them). Make sure the
@@ -186,10 +187,27 @@ in a 100k-token blob).
 
 - `names` — session title + AI title (cheap; the default)
 - `prompts` — the above + everything you typed
-- `replies` — the above + the agent's text responses
+- `replies` — the above + the agent's text responses, its chain-of-thought, and the text
+  of any subagents it spawned (the last two are configurable — see below)
 
 `prompts`/`replies` parse each log, so they're heavier than `names` — but only the picker
 uses them, on demand.
+
+**What `replies` searches is configurable** via `~/.config/quarry/config.ini` (override the
+directory with `$XDG_CONFIG_HOME`; `make install-config` drops a starter copy). A missing or
+malformed file falls back to the defaults:
+
+```ini
+[search]
+# Extra content the `replies` scope searches (names/prompts are unaffected).
+sidechains = true    # also search the session's subagent transcripts
+thinking   = true    # include the agent's chain-of-thought, not just visible replies
+```
+
+`replies` always includes the agent's visible text responses; the two toggles add its
+reasoning and its subagents' text on top. It does **not** search the exact commands the
+agent ran (`tool_use`) or their output (`tool_result`) — those are far larger and would
+need a persistent index.
 
 > **Selecting text from the fzf screen** (e.g. to copy a path out of the preview): fzf
 > captures the mouse, so use your terminal's bypass modifier — in **iTerm2**, hold

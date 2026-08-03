@@ -17,6 +17,7 @@ per-directory `lastSessionId` pointer plus that session's last-run metrics.
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 from dataclasses import dataclass, field
@@ -393,29 +394,72 @@ def scan_latest_context(path: Path) -> int:
     return latest
 
 
-def scan_text(path: Path, include_replies: bool) -> str:
-    """Concatenate human prompt text (and, with include_replies, assistant text)
-    from a log into one searchable line — the content for --scope prompts/replies."""
+# ── search config ──────────────────────────────────────────────────────────
+#
+# ~/.config/quarry/config.ini tunes what the widest fzf scope (replies)
+# searches. Missing or malformed config falls back to the defaults below.
+
+
+@dataclass
+class SearchConfig:
+    sidechains: bool = True   # also search the session's subagent transcripts
+    thinking: bool = True     # include the agent's chain-of-thought, not just replies
+
+
+def config_ini_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "quarry" / "config.ini"
+
+
+def load_search_config() -> SearchConfig:
+    cfg = SearchConfig()
+    parser = configparser.ConfigParser()
+    try:
+        if not parser.read(config_ini_path(), encoding="utf-8"):
+            return cfg
+        return SearchConfig(
+            sidechains=parser.getboolean("search", "sidechains", fallback=cfg.sidechains),
+            thinking=parser.getboolean("search", "thinking", fallback=cfg.thinking),
+        )
+    except (configparser.Error, OSError, ValueError):
+        return cfg
+
+
+def scan_text(path: Path, *, replies: bool, thinking: bool = False,
+              include_sidechain: bool = False) -> str:
+    """Concatenate a log's searchable text into one line — the content behind
+    --scope prompts/replies. Human prompt text is always included; `replies`
+    adds the agent's visible text and `thinking` its chain-of-thought. Records
+    flagged isSidechain are skipped unless `include_sidechain`."""
     parts: list[str] = []
-    for line in path.open(encoding="utf-8", errors="replace"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        t = rec.get("type")
-        if t == "user" and not rec.get("isMeta"):
-            c = (rec.get("message") or {}).get("content")
-            if isinstance(c, str):
-                parts.append(c)
-            elif isinstance(c, list):
-                parts += [b.get("text", "") for b in c
-                          if isinstance(b, dict) and b.get("type") == "text"]
-        elif t == "assistant" and include_replies and not rec.get("isSidechain"):
-            parts += [b.get("text", "") for b in (rec.get("message") or {}).get("content", [])
-                      if isinstance(b, dict) and b.get("type") == "text"]
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("isSidechain") and not include_sidechain:
+                continue
+            t = rec.get("type")
+            if t == "user" and not rec.get("isMeta"):
+                c = (rec.get("message") or {}).get("content")
+                if isinstance(c, str):
+                    parts.append(c)
+                elif isinstance(c, list):
+                    parts += [b.get("text", "") for b in c
+                              if isinstance(b, dict) and b.get("type") == "text"]
+            elif t == "assistant" and replies:
+                for b in (rec.get("message") or {}).get("content", []):
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "text":
+                        parts.append(b.get("text", ""))
+                    elif thinking and b.get("type") == "thinking":
+                        parts.append(b.get("thinking", ""))
     return " ".join(" ".join(parts).split())
 
 

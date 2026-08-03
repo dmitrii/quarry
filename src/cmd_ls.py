@@ -62,16 +62,24 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def emit_tsv(listing, time_key, scope):
+def emit_tsv(listing, time_key, scope, cfg):
     for s in listing:
         label = cs.clean_line(s.title or s.ai_title or s.uuid)
         dirp = (s.cwd or "").replace("\t", " ").replace("\n", " ")
         dt = time_key(s)
         date = dt.astimezone().strftime("%Y-%m-%d %H:%M") if dt else ""
-        content = s.ai_title or ""
+        parts = [s.ai_title or ""]
         if scope in ("prompts", "replies") and s.path:
-            content = f"{content} {cs.scan_text(s.path, scope == 'replies')}"
-        print("\t".join((s.uuid, label, dirp, date, cs.clean_line(content))))
+            replies = scope == "replies"
+            parts.append(cs.scan_text(s.path, replies=replies, thinking=cfg.thinking,
+                                      include_sidechain=cfg.sidechains))
+            if replies and cfg.sidechains:
+                # Subagent transcripts live in their own files; fold their text
+                # into the parent so a subagent's work makes the parent findable.
+                for sc in s.sidechains:
+                    parts.append(cs.scan_text(sc, replies=True, thinking=cfg.thinking,
+                                              include_sidechain=True))
+        print("\t".join((s.uuid, label, dirp, date, cs.clean_line(" ".join(parts)))))
 
 
 def _row(pal, lbl, val):
@@ -224,7 +232,7 @@ def main(argv: list[str]) -> int:
         listing.sort(key=lambda s: time_key(s) or epoch, reverse=not args.reverse)
 
     if args.tsv:
-        emit_tsv(listing, time_key, args.scope)
+        emit_tsv(listing, time_key, args.scope, cs.load_search_config())
         return 0
 
     if not listing:

@@ -3,6 +3,7 @@
 #
 #   make install               symlink `quarry` into BINDIR
 #   make install-completions   install fish/zsh/bash completions
+#   make install-config        drop a starter config (won't clobber an existing one)
 #   make uninstall             remove everything the above installed
 #
 # Override any directory on the command line, e.g.:
@@ -15,19 +16,24 @@ FISH_DIR ?= $(HOME)/.config/fish/completions
 ZSH_DIR  ?= $(PREFIX)/share/zsh/site-functions
 BASH_DIR ?= $(PREFIX)/share/bash-completion/completions
 
+# Search config lives under XDG config home (honored by quarry itself too).
+CONFIG_DIR ?= $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/quarry
+
 # Absolute path to the entry point, so the symlink works from any cwd. quarry-fzf
 # is found as its sibling in bin/, so only `quarry` needs to be on PATH.
-QUARRY := $(abspath bin/quarry)
+QUARRY  := $(abspath bin/quarry)
+EXAMPLE := $(abspath config.ini.example)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install uninstall install-completions \
+.PHONY: help install uninstall install-completions install-config \
         install-fish install-zsh install-bash
 
 help:
 	@echo "quarry — make targets:"
 	@echo "  install               symlink quarry into $(BINDIR)"
 	@echo "  install-completions   install fish/zsh/bash completions"
+	@echo "  install-config        drop a starter config (won't clobber existing)"
 	@echo "  uninstall             remove the symlink and completion files"
 	@echo ""
 	@echo "Dirs (override on the command line): PREFIX=$(PREFIX)"
@@ -63,6 +69,16 @@ install-bash:
 	@echo "       source $(BASH_DIR)/quarry"
 
 install-completions: install-fish install-zsh install-bash
+
+# Starter config, only if the user has none — never overwrite their settings.
+install-config:
+	@mkdir -p "$(CONFIG_DIR)"
+	@if [ -e "$(CONFIG_DIR)/config.ini" ]; then \
+	  echo "config: $(CONFIG_DIR)/config.ini exists — left unchanged"; \
+	else \
+	  cp "$(EXAMPLE)" "$(CONFIG_DIR)/config.ini"; \
+	  echo "config: installed $(CONFIG_DIR)/config.ini"; \
+	fi
 
 uninstall:
 	@rm -f "$(BINDIR)/quarry" \

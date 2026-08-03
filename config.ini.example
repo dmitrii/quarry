@@ -1,0 +1,16 @@
+# quarry search configuration.
+#
+# Install with `make install-config` (copies this to ~/.config/quarry/config.ini
+# only if none exists), or place it there by hand. quarry only ever reads it —
+# delete it to fall back to the defaults shown below.
+#
+# It tunes what the widest `quarry fzf` scope (replies) searches; the names and
+# prompts scopes are unaffected.
+
+[search]
+sidechains = true    # also search the session's subagent transcripts
+thinking   = true    # include the agent's chain-of-thought, not just visible replies
+
+# Planned — will require building a persistent text index first:
+# commands = false   # tool_use inputs (the exact commands the agent ran)
+# output   = false   # tool_result content (command output)
