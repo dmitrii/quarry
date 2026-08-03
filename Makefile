@@ -4,6 +4,7 @@
 #   make install               symlink `quarry` into BINDIR
 #   make install-completions   install fish/zsh/bash completions
 #   make install-config        drop a starter config (won't clobber an existing one)
+#   make test                  run the unit test suite
 #   make uninstall             remove everything the above installed
 #
 # Override any directory on the command line, e.g.:
@@ -23,10 +24,11 @@ CONFIG_DIR ?= $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/quarry
 # is found as its sibling in bin/, so only `quarry` needs to be on PATH.
 QUARRY  := $(abspath bin/quarry)
 EXAMPLE := $(abspath config.ini.example)
+PYTHON  ?= python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install uninstall install-completions install-config \
+.PHONY: help install uninstall install-completions install-config test \
         install-fish install-zsh install-bash
 
 help:
@@ -34,9 +36,13 @@ help:
 	@echo "  install               symlink quarry into $(BINDIR)"
 	@echo "  install-completions   install fish/zsh/bash completions"
 	@echo "  install-config        drop a starter config (won't clobber existing)"
+	@echo "  test                  run the unit test suite"
 	@echo "  uninstall             remove the symlink and completion files"
 	@echo ""
 	@echo "Dirs (override on the command line): PREFIX=$(PREFIX)"
+
+test:
+	@$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 
 install:
 	@mkdir -p "$(BINDIR)"
