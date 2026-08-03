@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import claude_sessions as cs  # noqa: E402
+import cmd_rename  # noqa: E402
 
 
 class ConfigBase(unittest.TestCase):
@@ -198,6 +199,38 @@ class SetCustomTitleTests(unittest.TestCase):
             s.open = True
             with self.assertRaises(RuntimeError):
                 cs.set_custom_title(s, "x")
+
+
+class ResolveTargetsTests(unittest.TestCase):
+    def _mk(self, uuid, title=None, ai_title=None):
+        return cs.Session(uuid=uuid, title=title, cwd="/x", started=None, last=None,
+                          ai_title=ai_title)
+
+    def test_glob_skips_titled_unless_retitle(self):
+        sess = [self._mk("aaaa1111"), self._mk("aaaa2222", title="already")]
+        got = cmd_rename.resolve_targets(sess, "aaaa*", retitle=False, root=None, cwd="/x")
+        self.assertEqual([s.uuid for s in got], ["aaaa1111"])
+        got = cmd_rename.resolve_targets(sess, "aaaa*", retitle=True, root=None, cwd="/x")
+        self.assertEqual(sorted(s.uuid for s in got), ["aaaa1111", "aaaa2222"])
+
+    def test_single_explicit_titled_is_kept(self):
+        sess = [self._mk("aaaa2222", title="already")]
+        got = cmd_rename.resolve_targets(sess, "aaaa2222", retitle=False, root=None, cwd="/x")
+        self.assertEqual([s.uuid for s in got], ["aaaa2222"])
+
+    def test_matches_by_name(self):
+        sess = [self._mk("uuuu1", title="my-proj")]
+        got = cmd_rename.resolve_targets(sess, "my-*", retitle=True, root=None, cwd="/x")
+        self.assertEqual([s.uuid for s in got], ["uuuu1"])
+
+
+class DryRunTests(unittest.TestCase):
+    def test_skeleton_leaves_summary_literal(self):
+        s = cs.Session(uuid="u", title=None, cwd="/x/quarry", started=None, last=None,
+                       ai_title="")
+        skeleton = cs.render_template("$LAUNCH_DIR-${AI_TITLE:-$SUMMARY}",
+                                      cmd_rename._skeleton_resolver(s))
+        self.assertEqual(skeleton, "quarry-$SUMMARY")
 
 
 if __name__ == "__main__":
