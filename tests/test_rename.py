@@ -101,5 +101,34 @@ class HelperTests(unittest.TestCase):
         self.assertIsNone(cs.free_variable(s, "SUMMARY"))
 
 
+class RenderTests(unittest.TestCase):
+    def _resolver(self, values, log=None):
+        def resolve(name):
+            if log is not None:
+                log.append(name)
+            return values.get(name, "")
+        return resolve
+
+    def test_plain_and_braced(self):
+        r = self._resolver({"START_DATE": "2025-08-12", "SUMMARY": "fix-bug"})
+        self.assertEqual(cs.render_template("$START_DATE-$SUMMARY", r), "2025-08-12-fix-bug")
+        self.assertEqual(cs.render_template("${START_DATE}_x", r), "2025-08-12_x")
+
+    def test_empty_segment_collapses(self):
+        r = self._resolver({"START_DATE": "2025-08-12", "GIT_PROJECT": "", "SUMMARY": "fix"})
+        self.assertEqual(cs.render_template("$START_DATE-$GIT_PROJECT-$SUMMARY", r),
+                         "2025-08-12-fix")
+
+    def test_fallback_used_when_empty(self):
+        r = self._resolver({"AI_TITLE": "", "SUMMARY": "generated-title"})
+        self.assertEqual(cs.render_template("${AI_TITLE:-$SUMMARY}", r), "generated-title")
+
+    def test_fallback_is_lazy(self):
+        log = []
+        r = self._resolver({"AI_TITLE": "existing-title", "SUMMARY": "should-not-run"}, log)
+        self.assertEqual(cs.render_template("${AI_TITLE:-$SUMMARY}", r), "existing-title")
+        self.assertNotIn("SUMMARY", log)  # generator never consulted
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -549,6 +549,45 @@ def free_variable(session: Session, name: str) -> str | None:
     return None
 
 
+def render_template(template: str, resolve) -> str:
+    """Render a title template. Supports $VAR, ${VAR}, and ${VAR:-fallback}
+    (fallback rendered only when VAR is empty). `resolve(name)` supplies values
+    and is called lazily. Result is normalized (see normalize_title)."""
+
+    def render(s: str) -> str:
+        out = []
+        i, n = 0, len(s)
+        while i < n:
+            ch = s[i]
+            if ch != "$":
+                out.append(ch)
+                i += 1
+                continue
+            if i + 1 < n and s[i + 1] == "{":
+                depth, j = 1, i + 2
+                while j < n and depth:
+                    if s[j] == "{":
+                        depth += 1
+                    elif s[j] == "}":
+                        depth -= 1
+                    if depth:
+                        j += 1
+                inner = s[i + 2:j]           # between the outer braces
+                i = j + 1                     # past the closing '}'
+                name, sep, fallback = inner.partition(":-")
+                value = resolve(name.strip())
+                out.append(value if value or not sep else render(fallback))
+            else:                             # bare $NAME
+                j = i + 1
+                while j < n and (s[j].isalnum() or s[j] == "_"):
+                    j += 1
+                out.append(resolve(s[i + 1:j]))
+                i = j
+        return "".join(out)
+
+    return normalize_title(render(template))
+
+
 def scan_text(path: Path, *, replies: bool, thinking: bool = False,
               include_sidechain: bool = False) -> str:
     """Concatenate a log's searchable text into one line — the content behind
