@@ -20,6 +20,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -609,6 +610,38 @@ def generate_summary(session: Session, cfg: RenameConfig) -> str:
     if not title:
         raise RuntimeError("summary_command produced no usable title")
     return title
+
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                      r"[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def set_custom_title(session: Session, title: str) -> None:
+    """Append a custom-title record at the transcript tail (matches /rename),
+    then verify our parser reads it back. Raises on bad input or format drift."""
+    title = title.strip()
+    if not title:
+        raise ValueError("title is empty")
+    if not _UUID_RE.match(session.uuid):
+        raise ValueError(f"not a session UUID: {session.uuid}")
+    if session.open:
+        raise RuntimeError(f"session {session.uuid} is open in a live process")
+    if session.path is None or not session.path.exists():
+        raise RuntimeError(f"transcript not found for {session.uuid}")
+
+    record = json.dumps({"type": "custom-title", "customTitle": title,
+                         "sessionId": session.uuid})
+    data = session.path.read_bytes()
+    prefix = b"" if (not data or data.endswith(b"\n")) else b"\n"
+    with session.path.open("ab") as fh:
+        fh.write(prefix + record.encode("utf-8") + b"\n")
+
+    reloaded = load_session(session.path)
+    if reloaded is None or reloaded.title != title:
+        raise RuntimeError(
+            "wrote the title but could not read it back — quarry's understanding "
+            "of the transcript format may be out of date")
+    session.title = title
 
 
 def scan_text(path: Path, *, replies: bool, thinking: bool = False,

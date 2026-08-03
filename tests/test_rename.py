@@ -162,5 +162,43 @@ class GenerateSummaryTests(unittest.TestCase):
                 cs.generate_summary(s, cfg)
 
 
+class SetCustomTitleTests(unittest.TestCase):
+    REAL = ['{"type":"user","cwd":"/x","timestamp":"2025-08-12T10:00:00.000Z",'
+            '"message":{"role":"user","content":"hi"}}']
+
+    def _session(self, td):
+        d = Path(td) / "projects" / "-Users-x-Code-real"
+        d.mkdir(parents=True)
+        p = d / "d0809692-f479-402f-b302-4c880634577a.jsonl"
+        p.write_text("\n".join(self.REAL) + "\n", encoding="utf-8")
+        return cs.load_session(p)
+
+    def test_appends_and_reads_back(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td)
+            cs.set_custom_title(s, "my-title")
+            self.assertEqual(cs.load_session(s.path).title, "my-title")
+
+    def test_rejects_empty_title(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td)
+            with self.assertRaises(ValueError):
+                cs.set_custom_title(s, "   ")
+
+    def test_rejects_bad_uuid(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td)
+            s.uuid = "not-a-uuid"
+            with self.assertRaises(ValueError):
+                cs.set_custom_title(s, "x")
+
+    def test_refuses_open_session(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td)
+            s.open = True
+            with self.assertRaises(RuntimeError):
+                cs.set_custom_title(s, "x")
+
+
 if __name__ == "__main__":
     unittest.main()
