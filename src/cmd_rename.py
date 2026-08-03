@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import os
-import readline  # noqa: F401  (importing enables line editing + prefill on input())
+import readline  # noqa: F401  (importing enables line editing on input())
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -49,12 +49,18 @@ def resolve_targets(sessions, selector, retitle, root, cwd):
     if not selector:
         sid = cs.project_last_session(root, cwd) if root else None
         return [s for s in sessions if s.uuid == sid] if sid else []
-    matched = [s for s in sessions
-               if fnmatch.fnmatch(s.uuid, selector)
-               or (s.title and fnmatch.fnmatch(s.title, selector))
-               or (s.ai_title and fnmatch.fnmatch(s.ai_title, selector))]
-    explicit_single = len(matched) == 1 and selector == matched[0].uuid
-    if retitle or explicit_single:
+
+    def matches(s):
+        return (s.uuid.startswith(selector)                       # UUID prefix
+                or fnmatch.fnmatch(s.uuid, selector)              # UUID glob
+                or (s.title and fnmatch.fnmatch(s.title, selector))
+                or (s.ai_title and fnmatch.fnmatch(s.ai_title, selector)))
+
+    matched = [s for s in sessions if matches(s)]
+    is_glob = any(c in selector for c in "*?[")
+    # A non-glob selector that names exactly one session is an explicit target:
+    # rename it even if it already has a title. Globs skip titled ones by default.
+    if retitle or (not is_glob and len(matched) == 1):
         return matched
     return [s for s in matched if not s.named]
 

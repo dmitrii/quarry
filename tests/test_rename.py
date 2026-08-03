@@ -218,6 +218,11 @@ class ResolveTargetsTests(unittest.TestCase):
         got = cmd_rename.resolve_targets(sess, "aaaa2222", retitle=False, root=None, cwd="/x")
         self.assertEqual([s.uuid for s in got], ["aaaa2222"])
 
+    def test_uuid_prefix_matches(self):
+        sess = [self._mk("d0809692-f479-402f-b302-4c880634577a")]
+        got = cmd_rename.resolve_targets(sess, "d0809692", retitle=False, root=None, cwd="/x")
+        self.assertEqual([s.uuid for s in got], ["d0809692-f479-402f-b302-4c880634577a"])
+
     def test_matches_by_name(self):
         sess = [self._mk("uuuu1", title="my-proj")]
         got = cmd_rename.resolve_targets(sess, "my-*", retitle=True, root=None, cwd="/x")
