@@ -13,11 +13,14 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import os
+import readline  # noqa: F401  (importing enables line editing + prefill on input())
+import shutil
 import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import claude_sessions as cs  # noqa: E402
+import cmd_ls  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -106,7 +109,55 @@ def main(argv: list[str]) -> int:
             print(f"{s.uuid}  {s.title or s.ai_title or ''}  ->  {skeleton}")
         return 0
 
-    return _run_interactive(targets, template, cfg, args.model, pal)  # Task 7
+    return _run_interactive(targets, template, cfg, args.model, pal)
+
+
+def prompt_title(proposed: str, read=input) -> str | None:
+    """Show `proposed` in an editable line; return the accepted/edited title, or
+    None to skip (empty submission). KeyboardInterrupt propagates (abort batch)."""
+    def prefill():
+        readline.insert_text(proposed)
+        readline.redisplay()
+    hook = getattr(readline, "set_pre_input_hook", None)
+    if hook and read is input:
+        hook(prefill)
+    try:
+        answer = read("  title (Enter=accept, empty=skip, Ctrl-C=abort): ")
+    finally:
+        if hook and read is input:
+            hook(None)
+    answer = (answer or "").strip()
+    return answer or None
+
+
+def _run_interactive(targets, template, cfg, model, pal) -> int:
+    now = datetime.now(timezone.utc)
+    width = shutil.get_terminal_size(fallback=(80, 24)).columns
+    renamed = skipped = 0
+    for s in targets:
+        print()
+        cmd_ls.print_detail(s, pal, now, width)
+        try:
+            proposed = cs.render_template(template, _resolver(s, cfg, model))
+        except RuntimeError as e:
+            print(pal.warn(f"  summary generation failed: {e}"), file=sys.stderr)
+            proposed = ""
+        try:
+            chosen = prompt_title(proposed)
+        except KeyboardInterrupt:
+            print("\naborted.", file=sys.stderr)
+            break
+        if chosen is None:
+            skipped += 1
+            continue
+        try:
+            cs.set_custom_title(s, chosen)
+            print(pal.head(f"  renamed -> {chosen}"))
+            renamed += 1
+        except (ValueError, RuntimeError) as e:
+            print(pal.warn(f"  failed: {e}"), file=sys.stderr)
+    print(f"\nrenamed {renamed}, skipped {skipped}.", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":

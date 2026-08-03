@@ -233,5 +233,41 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual(skeleton, "quarry-$SUMMARY")
 
 
+class PromptTitleTests(unittest.TestCase):
+    def test_accept_returns_edited(self):
+        self.assertEqual(cmd_rename.prompt_title("proposed", read=lambda p: "edited"),
+                         "edited")
+
+    def test_empty_input_skips(self):
+        self.assertIsNone(cmd_rename.prompt_title("proposed", read=lambda p: "   "))
+
+    def test_ctrl_c_propagates(self):
+        def boom(p):
+            raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            cmd_rename.prompt_title("proposed", read=boom)
+
+
+class EndToEndApplyTests(unittest.TestCase):
+    def test_generate_render_and_apply(self):
+        with TemporaryDirectory() as td:
+            d = Path(td) / "projects" / "-Users-x-Code-quarry"
+            d.mkdir(parents=True)
+            p = d / "d0809692-f479-402f-b302-4c880634577a.jsonl"
+            p.write_text('{"type":"user","cwd":"/Users/x/Code/quarry",'
+                         '"timestamp":"2025-08-12T10:00:00.000Z",'
+                         '"message":{"role":"user","content":"Fix flaky test"}}\n',
+                         encoding="utf-8")
+            s = cs.load_session(p)
+            cfg = cs.RenameConfig(default_template="$LAUNCH_DIR-$SUMMARY",
+                                  summary_command="printf fixed-flaky-test")
+            proposed = cs.render_template(cfg.default_template,
+                                          cmd_rename._resolver(s, cfg, None))
+            self.assertEqual(proposed, "quarry-fixed-flaky-test")
+            chosen = cmd_rename.prompt_title(proposed, read=lambda pr: proposed)
+            cs.set_custom_title(s, chosen)
+            self.assertEqual(cs.load_session(p).title, "quarry-fixed-flaky-test")
+
+
 if __name__ == "__main__":
     unittest.main()
