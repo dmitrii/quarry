@@ -426,6 +426,49 @@ def load_search_config() -> SearchConfig:
         return cfg
 
 
+# ── rename config ────────────────────────────────────────────────────────────
+#
+# The [rename] section of ~/.config/quarry/config.ini tunes `quarry rename`.
+# Defaults here are authoritative (quarry works with no config file);
+# config.ini.example mirrors them.
+
+DEFAULT_SUMMARY_COMMAND = (
+    'claude -p --no-session-persistence --model haiku --effort low --tools "" '
+    '--system-prompt "You output ONLY a 3-8 word lowercase kebab-case slug '
+    'summarizing the session topic. Do not include the project, repo, or tool '
+    'name. No dates, no quotes, no punctuation, no explanation."'
+)
+
+
+@dataclass
+class RenameConfig:
+    default_template: str = "${AI_TITLE:-$SUMMARY}"
+    summary_command: str = DEFAULT_SUMMARY_COMMAND
+    summary_context_chars: int = 8000
+    summary_timeout_secs: int = 60
+
+
+def load_rename_config() -> RenameConfig:
+    cfg = RenameConfig()
+    # interpolation=None so a summary_command containing '%' is taken literally.
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        if not parser.read(config_ini_path(), encoding="utf-8"):
+            return cfg
+        return RenameConfig(
+            default_template=parser.get("rename", "default_template",
+                                        fallback=cfg.default_template),
+            summary_command=parser.get("rename", "summary_command",
+                                       fallback=cfg.summary_command),
+            summary_context_chars=parser.getint("rename", "summary_context_chars",
+                                                 fallback=cfg.summary_context_chars),
+            summary_timeout_secs=parser.getint("rename", "summary_timeout_secs",
+                                                fallback=cfg.summary_timeout_secs),
+        )
+    except (configparser.Error, OSError, ValueError):
+        return cfg
+
+
 def scan_text(path: Path, *, replies: bool, thinking: bool = False,
               include_sidechain: bool = False) -> str:
     """Concatenate a log's searchable text into one line — the content behind

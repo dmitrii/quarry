@@ -1,12 +1,11 @@
-# quarry search configuration.
+# quarry configuration.
 #
 # Install with `make install-config` (copies this to ~/.config/quarry/config.ini
 # only if none exists), or place it there by hand. quarry only ever reads it —
 # delete it to fall back to the defaults shown below.
-#
-# It tunes what the widest `quarry fzf` scope (replies) searches; the names and
-# prompts scopes are unaffected.
 
+# [search] tunes what the widest `quarry fzf` scope (replies) searches; the
+# names and prompts scopes are unaffected.
 [search]
 sidechains = true    # also search the session's subagent transcripts
 thinking   = true    # include the agent's chain-of-thought, not just visible replies
@@ -14,3 +13,20 @@ thinking   = true    # include the agent's chain-of-thought, not just visible re
 # Planned — will require building a persistent text index first:
 # commands = false   # tool_use inputs (the exact commands the agent ran)
 # output   = false   # tool_result content (command output)
+
+# [rename] tunes `quarry rename`.
+[rename]
+# What `quarry rename` writes as a title. $VARS are substituted; ${VAR:-fallback}
+# uses the fallback when VAR is empty. Free vars: $START_DATE $LAST_ACTIVITY_DATE
+# $LAUNCH_DIR $GIT_PROJECT $BRANCH $UUID $UUID8 $AI_TITLE. $SUMMARY is generated.
+default_template = ${AI_TITLE:-$SUMMARY}
+
+# $SUMMARY generator. Contract: quarry pipes session context to this command's
+# stdin; the command prints the title to stdout. Edit freely (model, effort,
+# wording). The default reuses your Claude Code auth and leaves no session on disk.
+summary_command = claude -p --no-session-persistence --model haiku --effort low --tools "" --system-prompt "You output ONLY a 3-8 word lowercase kebab-case slug summarizing the session topic. Do not include the project, repo, or tool name. No dates, no quotes, no punctuation, no explanation."
+
+# Max characters of session context fed to summary_command (a cost knob).
+summary_context_chars = 8000
+# Seconds before a summary_command call is aborted.
+summary_timeout_secs = 60
