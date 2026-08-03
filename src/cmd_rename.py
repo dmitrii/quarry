@@ -16,6 +16,7 @@ import os
 import readline  # noqa: F401  (importing enables line editing on input())
 import shutil
 import sys
+import threading
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -65,6 +66,37 @@ def resolve_targets(sessions, selector, retitle, root, cwd):
     return [s for s in matched if not s.named]
 
 
+def _generate_summary(session, cfg):
+    """cs.generate_summary, with a live progress line while the (possibly
+    multi-second) command runs — but only on an interactive terminal, so tests
+    and pipes stay quiet."""
+    if not sys.stderr.isatty():
+        return cs.generate_summary(session, cfg)
+    result = {}
+
+    def work():
+        try:
+            result["value"] = cs.generate_summary(session, cfg)
+        except Exception as e:  # noqa: BLE001 - re-raised on the main thread below
+            result["error"] = e
+
+    t = threading.Thread(target=work)
+    t.start()
+    sys.stderr.write("  generating a name proposal")
+    sys.stderr.flush()
+    while True:
+        t.join(timeout=1.0)
+        if not t.is_alive():
+            break
+        sys.stderr.write(".")
+        sys.stderr.flush()
+    sys.stderr.write("\r\033[K")  # clear the progress line
+    sys.stderr.flush()
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
 def _resolver(session, cfg, model):
     """Build a lazy variable resolver for one session: free vars are instant,
     $SUMMARY shells out (only when actually reached during rendering)."""
@@ -80,7 +112,7 @@ def _resolver(session, cfg, model):
             return cache[name]
         v = cs.free_variable(session, name)
         if v is None and name == "SUMMARY":
-            v = cs.generate_summary(session, live)
+            v = _generate_summary(session, live)
         cache[name] = v or ""
         return cache[name]
     return resolve

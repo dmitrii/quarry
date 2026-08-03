@@ -281,5 +281,20 @@ class EndToEndApplyTests(unittest.TestCase):
             self.assertEqual(cs.load_session(p).title, "quarry-fixed-flaky-test")
 
 
+class GenerateProgressTests(unittest.TestCase):
+    def test_wrapper_delegates_without_tty(self):
+        with TemporaryDirectory() as td:
+            d = Path(td) / "projects" / "-Users-x-Code-real"
+            d.mkdir(parents=True)
+            p = d / "s.jsonl"
+            p.write_text('{"type":"user","cwd":"/x",'
+                         '"timestamp":"2025-08-12T10:00:00.000Z",'
+                         '"message":{"role":"user","content":"hello world"}}\n',
+                         encoding="utf-8")
+            s = cs.load_session(p)
+            cfg = cs.RenameConfig(summary_command="printf my-title")
+            self.assertEqual(cmd_rename._generate_summary(s, cfg), "my-title")
+
+
 if __name__ == "__main__":
     unittest.main()
