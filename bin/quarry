@@ -27,6 +27,7 @@ _SRC = os.path.join(os.path.dirname(_BIN), "src")
 sys.path.insert(0, _SRC)
 
 import cmd_ls  # noqa: E402
+import cmd_rename  # noqa: E402
 import cmd_rm  # noqa: E402
 
 USAGE = f"""\
@@ -37,6 +38,7 @@ usage: quarry <command> [options]
 commands:
   ls           list sessions (ls-style); pass a UUID/name for a detail view
   rm           remove a session's on-disk artifacts
+  rename       set session titles from a template (bulk or single)
   fzf          interactively pick a session and resume it (needs fzf)
   completions  emit a shell completion script (fish | zsh | bash)
 
@@ -100,6 +102,8 @@ def main(argv: list[str]) -> int:
         return cmd_ls.main(rest)
     if cmd == "rm":
         return cmd_rm.main(rest)
+    if cmd == "rename":
+        return cmd_rename.main(rest)
     if cmd == "fzf":
         return run_fzf(rest)
     if cmd == "completions":
@@ -146,6 +150,7 @@ complete -c quarry -f
 # Top-level commands.
 complete -c quarry -n __quarry_needs_command -a ls -d 'List sessions'
 complete -c quarry -n __quarry_needs_command -a rm -d 'Remove a session'
+complete -c quarry -n __quarry_needs_command -a rename -d 'Title sessions'
 complete -c quarry -n __quarry_needs_command -a fzf -d 'Interactive picker'
 complete -c quarry -n __quarry_needs_command -a completions -d 'Emit shell completions'
 
@@ -168,6 +173,14 @@ complete -c quarry -n '__quarry_using_command rm' -s n -l dry-run -d 'preview on
 complete -c quarry -n '__quarry_using_command rm' -l color -x -a 'auto always never' -d 'when to colorize'
 complete -c quarry -n '__quarry_using_command rm' -a '(__quarry_sessions)' -d session
 
+# quarry rename
+complete -c quarry -n '__quarry_using_command rename' -s t -l template -x -d 'title template'
+complete -c quarry -n '__quarry_using_command rename' -l retitle -d 'include already-titled sessions'
+complete -c quarry -n '__quarry_using_command rename' -s n -l dry-run -d 'preview only'
+complete -c quarry -n '__quarry_using_command rename' -l model -x -d 'summary model override'
+complete -c quarry -n '__quarry_using_command rename' -l color -x -a 'auto always never' -d 'when to colorize'
+complete -c quarry -n '__quarry_using_command rename' -a '(__quarry_sessions)' -d session
+
 # quarry completions
 complete -c quarry -n '__quarry_using_command completions' -f -a 'fish zsh bash'
 """
@@ -182,6 +195,7 @@ _quarry() {
   cmds=(
     'ls:List sessions'
     'rm:Remove a session'
+    'rename:Title sessions'
     'fzf:Interactive picker'
     'completions:Emit shell completions'
   )
@@ -206,6 +220,15 @@ _quarry() {
         '--color=[when to colorize]:when:(auto always never)' \
         '*:session:_default'
       ;;
+    rename)
+      _arguments \
+        '(-t --template)'{-t,--template}'[title template]:template:' \
+        '--retitle[include already-titled sessions]' \
+        '(-n --dry-run)'{-n,--dry-run}'[preview only]' \
+        '--model=[summary model override]:model:' \
+        '--color=[when to colorize]:when:(auto always never)' \
+        '*:session:_default'
+      ;;
     completions)
       _values 'shell' fish zsh bash
       ;;
@@ -224,7 +247,7 @@ _quarry() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   sub="${COMP_WORDS[1]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "ls rm fzf completions" -- "$cur") )
+    COMPREPLY=( $(compgen -W "ls rm rename fzf completions" -- "$cur") )
     return
   fi
   case "$sub" in
@@ -233,6 +256,9 @@ _quarry() {
       ;;
     rm)
       COMPREPLY=( $(compgen -W "-f --force -n --dry-run --color" -- "$cur") )
+      ;;
+    rename)
+      COMPREPLY=( $(compgen -W "-t --template --retitle -n --dry-run --model --color" -- "$cur") )
       ;;
     completions)
       COMPREPLY=( $(compgen -W "fish zsh bash" -- "$cur") )

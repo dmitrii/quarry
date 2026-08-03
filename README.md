@@ -9,6 +9,7 @@ the one exception: `quarry fzf` and the detail view's `Resume` line hand off to
 
 - **`quarry ls`** — list sessions, or show one in detail.
 - **`quarry rm`** — remove a session's on-disk artifacts (with confirmation).
+- **`quarry rename`** — set session titles from a template, in bulk or one at a time.
 - **`quarry fzf`** — interactively find a session (fuzzy over names/prompts/replies) and
   resume it. Requires [`fzf`](https://github.com/junegunn/fzf).
 - **`quarry completions`** — emit a shell completion script (fish/zsh/bash).
@@ -160,6 +161,63 @@ Would remove session 8f3c1a92-4b7e-4c1d-9a2f-1e6d0b5c7a34  "Track down and fix t
   2 item(s), 71.6 KiB (73,301 B)
 ```
 
+## `quarry rename`
+
+```
+quarry rename [-t TEMPLATE] [--retitle] [-n] [--model M] [--color {auto,always,never}] [selector]
+```
+
+Sets session **titles** — the name `/rename` sets — from a template, so a year of
+UUID-named sessions can be titled without resuming each one. It writes the title exactly
+as Claude Code does: a `custom-title` record appended to the session's transcript (nothing
+else is touched). Each session is shown in detail, then its proposed title is offered in an
+**editable prompt**: **Enter** accepts (edit first if you like), an **empty line** skips it,
+**Ctrl-C** aborts the batch.
+
+- **selector** — a UUID/prefix or shell glob matched against each session's UUID **or**
+  current name. **Omit it** to target the last session run in the current directory (like
+  `quarry rm` with no argument) — leave a session and just type `quarry rename`.
+- Already-titled sessions are **skipped** unless `--retitle` (or the selector names exactly
+  one). Subagent sidechains are never touched. Open sessions are refused.
+- `-n/--dry-run` lists the matched sessions and the rendered template (with `$SUMMARY` left
+  literal — no model calls), and writes nothing.
+
+### Template
+
+The title comes from a template of `$VAR` placeholders; `${VAR:-fallback}` uses `fallback`
+when `VAR` is empty. The default (`default_template` in config) is `${AI_TITLE:-$SUMMARY}`
+— reuse the auto-generated title if there is one, otherwise generate a fresh summary.
+
+- **Offline / free:** `$START_DATE`, `$LAST_ACTIVITY_DATE` (`YYYY-MM-DD`), `$LAUNCH_DIR`
+  (launch-dir basename), `$GIT_PROJECT` (enclosing `.git` root basename), `$BRANCH`,
+  `$UUID`, `$UUID8`, `$AI_TITLE` (kebab of Claude's auto title).
+- **Generated:** `$SUMMARY` — a 3–8 word kebab summary. This is the only variable that
+  calls a model, and only when actually reached (so `${AI_TITLE:-$SUMMARY}` costs nothing
+  when an AI title already exists).
+
+### `$SUMMARY` generation (pluggable)
+
+`$SUMMARY` is produced by the `summary_command` in `[rename]` config. The contract:
+**quarry pipes the session's user-prompt context to the command's stdin; the command prints
+the title to stdout.** Swap in any command (another model, a local LLM) — nothing about the
+wording is baked into quarry. The shipped default shells out to the `claude` CLI:
+
+```
+claude -p --no-session-persistence --model haiku --effort low --tools "" --system-prompt "…"
+```
+
+which reuses your existing Claude Code auth (no API key), leaves **no** session on disk (so
+titled sessions don't pollute `quarry ls`), and needs no extra dependency. Tune the model,
+effort, wording, `summary_context_chars`, and `summary_timeout_secs` in the config
+(`make install-config` drops a starter copy). It does **not** feed the agent's commands
+(`tool_use`) or their output (`tool_result`) — those would need a persistent index.
+
+```
+$ quarry rename -n '*'
+d0809692-…  ->  2026-03-14-memfis-migrate-config-store
+9fcdb292-…  ->  2025-08-12-reckoner-multi-cloud-data-inventory
+```
+
 ## `quarry fzf`
 
 Interactive picker. It's a thin launcher — `quarry ls --tsv` piped into `fzf` — so `fzf`
@@ -252,8 +310,9 @@ every log just to list.
   argument parser. Puts `src/` on `sys.path`.
 - `bin/quarry-fzf` — thin shell launcher around `fzf` + `quarry ls`/`quarry rm`.
 - `src/claude_sessions.py` — shared core: discovery, matching, log analysis, artifact
-  listing, and formatting.
-- `src/cmd_ls.py`, `src/cmd_rm.py` — the `ls` and `rm` command implementations.
+  listing, config, title templating/generation, and formatting.
+- `src/cmd_ls.py`, `src/cmd_rm.py`, `src/cmd_rename.py` — the `ls`, `rm`, and `rename`
+  command implementations.
 
 ## Data source
 
