@@ -70,6 +70,8 @@ class ConfigExampleSyncTests(unittest.TestCase):
                          d.summary_context_chars)
         self.assertEqual(p.getint("rename", "summary_timeout_secs"),
                          d.summary_timeout_secs)
+        self.assertEqual(p.getint("rename", "summary_max_words"),
+                         d.summary_max_words)
 
 
 class HelperTests(unittest.TestCase):
@@ -161,6 +163,15 @@ class GenerateSummaryTests(unittest.TestCase):
             cfg = cs.RenameConfig(summary_command="false")
             with self.assertRaises(RuntimeError):
                 cs.generate_summary(s, cfg)
+
+    def test_caps_runaway_output_to_max_words(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td)
+            cfg = cs.RenameConfig(
+                summary_command="printf 'one two three four five six seven eight nine ten'",
+                summary_max_words=8)
+            self.assertEqual(cs.generate_summary(s, cfg),
+                             "one-two-three-four-five-six-seven-eight")
 
 
 class SetCustomTitleTests(unittest.TestCase):

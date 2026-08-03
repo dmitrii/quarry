@@ -448,6 +448,7 @@ class RenameConfig:
     summary_command: str = DEFAULT_SUMMARY_COMMAND
     summary_context_chars: int = 8000
     summary_timeout_secs: int = 60
+    summary_max_words: int = 8   # cap $SUMMARY so a runaway model reply can't sprawl
 
 
 def load_rename_config() -> RenameConfig:
@@ -466,6 +467,8 @@ def load_rename_config() -> RenameConfig:
                                                  fallback=cfg.summary_context_chars),
             summary_timeout_secs=parser.getint("rename", "summary_timeout_secs",
                                                 fallback=cfg.summary_timeout_secs),
+            summary_max_words=parser.getint("rename", "summary_max_words",
+                                            fallback=cfg.summary_max_words),
         )
     except (configparser.Error, OSError, ValueError):
         return cfg
@@ -609,6 +612,10 @@ def generate_summary(session: Session, cfg: RenameConfig) -> str:
     title = slugify(proc.stdout)
     if not title:
         raise RuntimeError("summary_command produced no usable title")
+    if cfg.summary_max_words > 0:
+        # A model that ignores the length instruction can spill a whole reply;
+        # keep only the leading words (the useful title is at the front).
+        title = "-".join(title.split("-")[: cfg.summary_max_words])
     return title
 
 

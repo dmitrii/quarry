@@ -30,3 +30,6 @@ summary_command = claude -p --no-session-persistence --model haiku --effort low 
 summary_context_chars = 8000
 # Seconds before a summary_command call is aborted.
 summary_timeout_secs = 60
+# Cap on $SUMMARY length (words), so a model that ignores the "3-8 words"
+# instruction can't produce a sprawling title. 0 disables the cap.
+summary_max_words = 8
