@@ -18,7 +18,14 @@ thinking   = true    # include the agent's chain-of-thought, not just visible re
 [rename]
 # What `quarry rename` writes as a title. $VARS are substituted; ${VAR:-fallback}
 # uses the fallback when VAR is empty. Free vars: $START_DATE $LAST_ACTIVITY_DATE
-# $LAUNCH_DIR $GIT_PROJECT $BRANCH $UUID $UUID8 $AI_TITLE. $SUMMARY is generated.
+# $LAUNCH_DIR $GIT_PROJECT $BRANCH $UUID $UUID8 $AI_TITLE. Parsed from links:
+#   $GH_REPO $GH_PR $GH_REPO_PR (e.g. platform-infra-pr977; degrades to the repo
+#     when no PR is found) — GitHub, first prompt then whole-transcript fallback.
+#   $LINEAR_NAME (slug, on every Linear link) $LINEAR_KEY (e.g. eng-1234, issue
+#     links only) $LINEAR_HEX (6-char review id, review links only) — first prompt.
+# $SUMMARY is model-generated. Examples:
+#   default_template = ${LINEAR_KEY:-$GH_REPO_PR}-${LINEAR_NAME:-$SUMMARY}
+#   default_template = ${GH_REPO_PR:-$SUMMARY}
 default_template = ${AI_TITLE:-$SUMMARY}
 
 # $SUMMARY generator. Contract: quarry pipes session context to this command's

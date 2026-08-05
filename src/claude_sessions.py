@@ -532,6 +532,147 @@ def session_branch(session: Session) -> str:
     return ""
 
 
+# ── issue / PR references ────────────────────────────────────────────────────
+# Offline extraction of GitHub / Linear references for rename templates. Linear
+# vars are read from the first human prompt (the "first comment" where a link is
+# pasted); GitHub vars prefer the first prompt but fall back to a whole-transcript
+# scan, since a reviewed/created PR is often referenced later, not up front.
+
+_GH_PR_RE = re.compile(
+    r'github\.com/[A-Za-z0-9-]+/([A-Za-z0-9._-]+?)(?:\.git)?/pull/(\d+)', re.I)
+_GH_REPO_RE = re.compile(
+    r'github\.com[/:][A-Za-z0-9-]+/([A-Za-z0-9._-]+?)(?:\.git)?(?=[^A-Za-z0-9._-]|$)',
+    re.I)
+# linear.app/<workspace>/<section>/<rest>. <section> varies (issue, review,
+# project, …); <rest> is [<KEY-N>][sep]<slug>[-<hexid>]. Only issue links carry
+# the KEY; only review links carry the trailing hex id; every link has a slug.
+# The slug stops at whitespace/quotes/? /# and at <> so a URL wrapped in markup
+# (e.g. a slash command's <command-args>…</command-args>) doesn't swallow the tag.
+_LINEAR_URL_RE = re.compile(r'linear\.app/[^/\s"?#]+/[^/\s"?#]+/([^\s"?#<>]+)', re.I)
+_LINEAR_KEY_RE = re.compile(r'^([A-Za-z]{2,}-\d+)')
+_HEX_TAIL_RE = re.compile(r'[-/]([0-9a-f]{8,})$', re.I)
+
+LINEAR_HEX_LEN = 6   # $LINEAR_HEX exposes the leading N chars of the review id
+
+_LINEAR_VARS = ("LINEAR_KEY", "LINEAR_NAME", "LINEAR_HEX")
+_GH_VARS = ("GH_REPO", "GH_PR", "GH_REPO_PR")
+
+
+def _first_prompt_text(session: Session) -> str:
+    """Text of the session's first real human prompt (skipping meta records and
+    tool-result-only user turns). '' if none/unreadable — the log is read only
+    up to that first prompt, so this stays cheap."""
+    if session.path is None:
+        return ""
+    try:
+        with session.path.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "user" or rec.get("isMeta"):
+                    continue
+                c = (rec.get("message") or {}).get("content")
+                if isinstance(c, str):
+                    return c
+                if isinstance(c, list):
+                    texts = [b.get("text", "") for b in c
+                             if isinstance(b, dict) and b.get("type") == "text"]
+                    if texts:                       # a real prompt, not a tool result
+                        return " ".join(texts)
+    except OSError:
+        pass
+    return ""
+
+
+def _extract_linear(text: str) -> dict:
+    """LINEAR_KEY / LINEAR_NAME / LINEAR_HEX from the first linear.app URL in
+    `text`. Every Linear URL has a NAME; issue links add a KEY; review links add
+    a HEX. Absent parts are ''."""
+    out = {k: "" for k in _LINEAR_VARS}
+    m = _LINEAR_URL_RE.search(text or "")
+    if not m:
+        return out
+    rest = m.group(1).rstrip(").,;")
+    tail = _HEX_TAIL_RE.search(rest)
+    if tail and any(ch.isdigit() for ch in tail.group(1)):
+        out["LINEAR_HEX"] = tail.group(1)[:LINEAR_HEX_LEN]
+        rest = rest[: tail.start()]
+    key = _LINEAR_KEY_RE.match(rest)
+    if key:
+        out["LINEAR_KEY"] = key.group(1).lower()      # e.g. eng-1234
+        rest = rest[key.end():]
+    out["LINEAR_NAME"] = slugify(rest)                # slugify drops the leading sep
+    return out
+
+
+def _find_pr(text: str):
+    """(repo, number) from the first GitHub PR URL in `text`, or None."""
+    m = _GH_PR_RE.search(text or "")
+    return (m.group(1).rstrip("."), m.group(2)) if m else None
+
+
+def _transcript_pr(session: Session):
+    """(repo, number) from the first GitHub PR URL anywhere in the log, or None.
+    Reads the whole log; used only when the first prompt names no PR."""
+    if session.path is None:
+        return None
+    try:
+        with session.path.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                found = _find_pr(line)
+                if found:
+                    return found
+    except OSError:
+        pass
+    return None
+
+
+def _extract_github(session: Session, first: str) -> dict:
+    """GH_REPO / GH_PR / GH_REPO_PR. A PR in the first prompt wins; else the first
+    prompt's repo link plus the first PR found anywhere in the transcript.
+    GH_REPO_PR joins them (`repo-prN`), degrading to `repo` when no PR is known."""
+    pr = _find_pr(first)
+    if pr:
+        repo, num = pr
+    else:
+        num = ""
+        rm = _GH_REPO_RE.search(first or "")
+        repo = rm.group(1).rstrip(".") if rm else ""
+        tx = _transcript_pr(session)
+        if tx:
+            num = tx[1]
+            repo = repo or tx[0]
+    combo = f"{repo}-pr{num}" if (repo and num) else repo
+    return {"GH_REPO": repo, "GH_PR": num, "GH_REPO_PR": combo}
+
+
+def _linear_refs(session: Session) -> dict:
+    cached = getattr(session, "_lrefs", None)
+    if cached is None:
+        cached = _extract_linear(_first_prompt_text(session))
+        try:
+            session._lrefs = cached
+        except (AttributeError, TypeError):
+            pass
+    return cached
+
+
+def _github_refs(session: Session) -> dict:
+    cached = getattr(session, "_grefs", None)
+    if cached is None:
+        cached = _extract_github(session, _first_prompt_text(session))
+        try:
+            session._grefs = cached
+        except (AttributeError, TypeError):
+            pass
+    return cached
+
+
 def free_variable(session: Session, name: str) -> str | None:
     """Value for an instant/offline template variable, or None if `name` is not
     one (e.g. SUMMARY, which requires generation)."""
@@ -551,6 +692,10 @@ def free_variable(session: Session, name: str) -> str | None:
         return session.uuid[:8]
     if name == "AI_TITLE":
         return slugify(session.ai_title or "")
+    if name in _LINEAR_VARS:
+        return _linear_refs(session).get(name, "")
+    if name in _GH_VARS:
+        return _github_refs(session).get(name, "")
     return None
 
 

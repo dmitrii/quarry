@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import configparser
+import json
 import os
 import sys
 import unittest
@@ -324,6 +325,131 @@ class GenerateProgressTests(unittest.TestCase):
             s = cs.load_session(p)
             cfg = cs.RenameConfig(summary_command="printf my-title")
             self.assertEqual(cmd_rename._generate_summary(s, cfg), "my-title")
+
+
+class RefExtractionTests(unittest.TestCase):
+    def _session(self, td, content, *, extra_lines=()):
+        d = Path(td) / "projects" / "-Users-x-Code-real"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "s.jsonl"
+        head = ('{"type":"user","cwd":"/x","timestamp":"2025-08-12T10:00:00.000Z",'
+                '"message":{"role":"user","content":%s}}' % json.dumps(content))
+        p.write_text("\n".join([head, *extra_lines]) + "\n", encoding="utf-8")
+        return cs.Session(uuid="u", title=None, cwd="/x", started=None, last=None, path=p)
+
+    def _asst(self, text):
+        return ('{"type":"assistant","message":{"role":"assistant","content":'
+                '[{"type":"text","text":%s}]}}' % json.dumps(text))
+
+    # ── Linear: NAME on every link, KEY on issues, HEX on reviews ─────────
+    def test_linear_issue_key_name_no_hex(self):
+        self.assertEqual(
+            cs._extract_linear("see https://linear.app/acme/issue/ENG-42/fix-the-thing"),
+            {"LINEAR_KEY": "eng-42", "LINEAR_NAME": "fix-the-thing", "LINEAR_HEX": ""})
+
+    def test_linear_review_keyed(self):
+        got = cs._extract_linear("https://linear.app/acme/review/eng-1234-add-retry-to"
+                                 "-webhook-consumer-85a54f16c809")
+        self.assertEqual(got["LINEAR_KEY"], "eng-1234")
+        self.assertEqual(got["LINEAR_NAME"], "add-retry-to-webhook-consumer")
+        self.assertEqual(got["LINEAR_HEX"], "85a54f")
+
+    def test_linear_review_keyless(self):
+        got = cs._extract_linear("https://linear.app/acme/review/docs-add-tuning-guide"
+                                 "-for-large-eval-sets-5ab17a82f382")
+        self.assertEqual(got["LINEAR_KEY"], "")
+        self.assertEqual(got["LINEAR_NAME"], "docs-add-tuning-guide-for-large-eval-sets")
+        self.assertEqual(got["LINEAR_HEX"], "5ab17a")
+
+    def test_linear_project_keyless(self):
+        got = cs._extract_linear("https://linear.app/acme/project/q3-reliability-72575f7e716e")
+        self.assertEqual(got["LINEAR_KEY"], "")
+        self.assertEqual(got["LINEAR_NAME"], "q3-reliability")
+        self.assertEqual(got["LINEAR_HEX"], "72575f")
+        self.assertEqual(len(got["LINEAR_HEX"]), cs.LINEAR_HEX_LEN)
+
+    def test_linear_url_wrapped_in_markup_or_parens(self):
+        # a slash command stores the URL inside <command-args>…</command-args>;
+        # the slug must not swallow the trailing tag (regression).
+        u = "https://linear.app/acme/review/some-title-5ab17a82f382"
+        for wrapped in (f"<command-args>{u}</command-args>", f"(see {u})", f"<{u}>"):
+            got = cs._extract_linear(wrapped)
+            self.assertEqual(got["LINEAR_HEX"], "5ab17a", wrapped)
+            self.assertEqual(got["LINEAR_NAME"], "some-title", wrapped)
+
+    def test_hex_only_when_it_has_a_digit(self):
+        self.assertEqual(
+            cs._extract_linear("linear.app/w/review/some-title-85a54f16c809")["LINEAR_HEX"],
+            "85a54f")
+        # trailing all-letter hex word (no digit) is a slug word, not an id
+        got = cs._extract_linear("linear.app/w/review/cafe-deadbeef")
+        self.assertEqual(got["LINEAR_HEX"], "")
+        self.assertEqual(got["LINEAR_NAME"], "cafe-deadbeef")
+
+    def test_linear_is_first_prompt_only(self):
+        with TemporaryDirectory() as td:
+            later = self._asst("https://linear.app/acme/issue/ENG-9/late-link")
+            s = self._session(td, "first prompt, no linear link", extra_lines=[later])
+            self.assertEqual(cs.free_variable(s, "LINEAR_KEY"), "")
+            self.assertEqual(cs.free_variable(s, "LINEAR_NAME"), "")
+
+    def test_first_prompt_skips_tool_result_turn(self):
+        with TemporaryDirectory() as td:
+            d = Path(td) / "projects" / "-Users-x-Code-real"
+            d.mkdir(parents=True)
+            p = d / "s.jsonl"
+            tool_result = ('{"type":"user","cwd":"/x","timestamp":"2025-08-12T10:00:00.000Z",'
+                           '"message":{"role":"user","content":'
+                           '[{"type":"tool_result","content":"x"}]}}')
+            real = ('{"type":"user","cwd":"/x","timestamp":"2025-08-12T10:00:01.000Z",'
+                    '"message":{"role":"user","content":'
+                    '"https://linear.app/acme/issue/ENG-3/the-real-one"}}')
+            p.write_text(tool_result + "\n" + real + "\n", encoding="utf-8")
+            s = cs.Session(uuid="u", title=None, cwd="/x", started=None, last=None, path=p)
+            self.assertEqual(cs.free_variable(s, "LINEAR_KEY"), "eng-3")
+
+    # ── GitHub: first prompt preferred, whole-transcript PR fallback ──────
+    def test_github_pr_in_first_prompt(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td, "review https://github.com/acme/webapp/pull/1234 please")
+            self.assertEqual(cs.free_variable(s, "GH_REPO"), "webapp")
+            self.assertEqual(cs.free_variable(s, "GH_PR"), "1234")
+            self.assertEqual(cs.free_variable(s, "GH_REPO_PR"), "webapp-pr1234")
+
+    def test_github_scp_repo_only_degrades(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td, "clone git@github.com:acme/platform-infra.git")
+            self.assertEqual(cs.free_variable(s, "GH_REPO"), "platform-infra")
+            self.assertEqual(cs.free_variable(s, "GH_PR"), "")
+            self.assertEqual(cs.free_variable(s, "GH_REPO_PR"), "platform-infra")
+
+    def test_github_repo_trailing_punctuation(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td, "(see https://github.com/acme/scoring-tool)")
+            self.assertEqual(cs.free_variable(s, "GH_REPO"), "scoring-tool")
+
+    def test_github_pr_from_transcript_fallback(self):
+        # first prompt is a keyless Linear review link; the PR appears later
+        with TemporaryDirectory() as td:
+            later = self._asst("opened https://github.com/acme/platform-infra/pull/977")
+            s = self._session(td, "reviewing https://linear.app/acme/review/some-title-5ab17a82f382",
+                              extra_lines=[later])
+            self.assertEqual(cs.free_variable(s, "GH_PR"), "977")
+            self.assertEqual(cs.free_variable(s, "GH_REPO"), "platform-infra")
+            self.assertEqual(cs.free_variable(s, "GH_REPO_PR"), "platform-infra-pr977")
+
+    def test_github_first_prompt_pr_preferred_over_later(self):
+        with TemporaryDirectory() as td:
+            later = self._asst("also https://github.com/acme/other/pull/2")
+            s = self._session(td, "https://github.com/acme/webapp/pull/1", extra_lines=[later])
+            self.assertEqual(cs.free_variable(s, "GH_REPO_PR"), "webapp-pr1")
+
+    def test_github_absent_is_empty_and_template_falls_back(self):
+        with TemporaryDirectory() as td:
+            s = self._session(td, "no links in this one")
+            self.assertEqual(cs.free_variable(s, "GH_REPO_PR"), "")
+            r = cmd_rename._resolver(s, cs.RenameConfig(), None)
+            self.assertEqual(cs.render_template("${GH_REPO_PR:-none}", r), "none")
 
 
 if __name__ == "__main__":
