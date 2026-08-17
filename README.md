@@ -47,8 +47,10 @@ quarry ls [-l] [-a] [-c] [-r] [-t] [-S] [--size {log}] [--color {auto,always,nev
 - `-l` — long view. Columns: open marker, size, timestamp, launch directory
   (fixed 20 chars), and name/UUID. A trailing **`↳N`** marks a session that spawned
   `N` subagents (see below).
-- `-a` — also list **removed** sessions still referenced in `~/.claude.json` (in grey),
-  like `ls -a` surfacing otherwise-hidden entries.
+- `-a` — also list **hidden** sessions, like `ls -a`: **removed** sessions still
+  referenced in `~/.claude.json` (in grey), and **scripted** sessions — non-interactive
+  runs launched by a harness (their opening prompt was *enqueued*, not typed), shown
+  dimmed. Sub-agent *sidechains* are never listed here; they're folded into their parent.
 - `-c` — sort by **start** time instead of last interaction.
 - `-S` — sort by **size**, largest first.
 - `-r` — reverse the sort (oldest/smallest first).

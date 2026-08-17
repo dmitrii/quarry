@@ -46,6 +46,7 @@ class Session:
     last_meta: dict | None = None  # .claude.json last-run metrics, for deleted
     latest_context: int | None = None  # tokens in the last request; None until scanned
     is_sidechain: bool = False     # a subagent transcript, not a top-level session
+    is_scripted: bool = False      # launched programmatically (enqueued opening prompt)
     parent: str | None = None      # for a sidechain, the session it was spawned from
     sidechains: list[Path] = field(default_factory=list)  # child sidechain logs
 
@@ -111,6 +112,7 @@ def load_session(path: Path) -> Session | None:
     lo = hi = None
     session_id = None
     saw_turn = saw_primary_turn = False
+    enqueued_before_turn = False
     with path.open(encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.strip()
@@ -129,6 +131,9 @@ def load_session(path: Path) -> Session | None:
                 saw_turn = True
                 if not rec.get("isSidechain"):
                     saw_primary_turn = True
+            elif t == "queue-operation" and not saw_turn:
+                # An opening prompt enqueued before any turn = programmatic launch.
+                enqueued_before_turn = True
             if session_id is None and rec.get("sessionId"):
                 session_id = rec["sessionId"]
             # First cwd seen = the launch directory; later records drift as tools cd.
@@ -151,13 +156,17 @@ def load_session(path: Path) -> Session | None:
     # A transcript with only isSidechain turns is a subagent spawned from
     # another session (its sessionId), not a resumable conversation itself.
     is_sidechain = saw_turn and not saw_primary_turn
+    # Scripted = a standalone session whose opening prompt was enqueued by a
+    # launcher rather than typed. A sidechain (all-sidechain turns) is a fragment,
+    # not a standalone session, so it is never also "scripted".
+    is_scripted = enqueued_before_turn and not is_sidechain
     try:
         size = path.stat().st_size
     except OSError:
         size = 0
     return Session(uuid=path.stem, title=title, cwd=cwd, started=lo, last=hi,
                    ai_title=ai_title, path=path, log_bytes=size,
-                   is_sidechain=is_sidechain,
+                   is_sidechain=is_sidechain, is_scripted=is_scripted,
                    parent=session_id if is_sidechain else None)
 
 
@@ -197,7 +206,7 @@ def live_sessions(root: Path) -> dict[str, dict]:
 # served from the cache without being reopened. The cache is a pure
 # optimization — any read/write error just falls back to a live parse.
 
-_CACHE_VERSION = 2
+_CACHE_VERSION = 3
 
 
 def cache_file() -> Path:
@@ -241,7 +250,8 @@ def _entry_from_session(s: Session | None, size: int, mtime: int) -> dict:
                  started=s.started.isoformat() if s.started else None,
                  last=s.last.isoformat() if s.last else None,
                  log_bytes=s.log_bytes,
-                 is_sidechain=s.is_sidechain, parent=s.parent)
+                 is_sidechain=s.is_sidechain, is_scripted=s.is_scripted,
+                 parent=s.parent)
     return e
 
 
@@ -253,7 +263,8 @@ def _session_from_entry(path: Path, e: dict) -> Session | None:
         started=parse_ts(e["started"]) if e.get("started") else None,
         last=parse_ts(e["last"]) if e.get("last") else None,
         ai_title=e.get("ai_title"), path=path, log_bytes=e.get("log_bytes", 0),
-        is_sidechain=e.get("is_sidechain", False), parent=e.get("parent"))
+        is_sidechain=e.get("is_sidechain", False),
+        is_scripted=e.get("is_scripted", False), parent=e.get("parent"))
 
 
 def discover(root: Path) -> list[Session]:

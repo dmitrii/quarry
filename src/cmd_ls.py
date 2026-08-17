@@ -6,8 +6,9 @@ interaction, most recent first (like `ls -t`); -c sorts by start time, -S by
 size. In the long view a leading '*' (bold green) marks a session open in a
 live `claude` process. Pass a UUID/prefix/name to show one session in detail.
 
-With -a, sessions whose logs were removed but are still referenced in
-~/.claude.json are also listed (in grey), like `ls -a` surfacing hidden entries.
+With -a, hidden sessions are also listed, like `ls -a`: removed sessions still
+referenced in ~/.claude.json (in grey), and scripted (non-interactive, launched
+by a harness — their opening prompt was enqueued, not typed) sessions (dimmed).
 """
 
 from __future__ import annotations
@@ -36,7 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-l", dest="long", action="store_true",
                    help="long view: timestamp, launch directory, and name/UUID")
     p.add_argument("-a", dest="all", action="store_true",
-                   help="also list removed sessions still referenced in .claude.json")
+                   help="also list hidden sessions: removed (.claude.json) and "
+                        "scripted (non-interactive/agent-launched)")
     p.add_argument("-c", dest="by_started", action="store_true",
                    help="sort by session start time (default: last interaction)")
     p.add_argument("-r", dest="reverse", action="store_true",
@@ -92,7 +94,8 @@ def print_detail(s: cs.Session, pal: cs.Palette, now: datetime, width: int) -> N
         return
 
     stats = cs.analyze(s)
-    print(pal.head(s.title or s.ai_title or s.uuid))
+    print(pal.head(s.title or s.ai_title or s.uuid)
+          + (pal.dim("  (scripted)") if s.is_scripted else ""))
     _row(pal, "Session ID", s.uuid)
     # Name and AI title are always shown, side by side, so it's clear which is
     # user-set and which Claude generated — and that an unset name can be set.
@@ -224,7 +227,12 @@ def main(argv: list[str]) -> int:
         print_detail(match, pal, now, width)
         return 0
 
-    listing = sessions + deleted if args.all else sessions
+    # Scripted (non-interactive) sessions are hidden by default; -a reveals them
+    # alongside removed sessions. Sidechains never reach here (folded by discover).
+    if args.all:
+        listing = sessions + deleted
+    else:
+        listing = [s for s in sessions if not s.is_scripted]
     cs.ensure_sizes(listing, args.size)   # no-op for cheap metrics (e.g. log)
     if args.by_size:
         listing.sort(key=size_of, reverse=not args.reverse)   # largest first (ls -S)
@@ -244,11 +252,14 @@ def main(argv: list[str]) -> int:
             name = pal.gray(s.display_name)
         elif s.open:
             name = pal.open(s.display_name)
+        elif s.is_scripted:
+            name = pal.dim(s.display_name if s.named else s.uuid)
         else:
             name = pal.name(s.display_name) if s.named else pal.uuid(s.uuid)
         if args.long:
-            # Leading one-char column, ls -F style: '*' marks a live session.
-            mark = pal.open("*") if s.open else " "
+            # Leading one-char column, ls -F style: '*' live, 's' scripted.
+            mark = (pal.open("*") if s.open
+                    else pal.dim("s") if s.is_scripted else " ")
             size = pal.dim("-".rjust(cs.SIZE_COL_W)) if s.deleted else \
                 pal.dim(size_fmt(size_of(s)).rjust(cs.SIZE_COL_W))
             ts = pal.dim(cs.format_time(time_key(s), now))
