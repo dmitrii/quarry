@@ -163,6 +163,8 @@ complete -c quarry -n __quarry_needs_command -a rm -d 'Remove a session'
 complete -c quarry -n __quarry_needs_command -a rename -d 'Title sessions'
 complete -c quarry -n __quarry_needs_command -a fzf -d 'Interactive picker'
 complete -c quarry -n __quarry_needs_command -a completions -d 'Emit shell completions'
+complete -c quarry -n __quarry_needs_command -l help -d 'Show usage'
+complete -c quarry -n __quarry_needs_command -l version -d 'Show version and build'
 
 # quarry ls
 complete -c quarry -n '__quarry_using_command ls' -s l -d 'long view'
@@ -201,7 +203,7 @@ ZSH = r"""#compdef quarry
 # then start a new shell, or run: autoload -U compinit && compinit
 
 _quarry() {
-  local -a cmds
+  local -a cmds opts
   cmds=(
     'ls:List sessions'
     'rm:Remove a session'
@@ -209,8 +211,13 @@ _quarry() {
     'fzf:Interactive picker'
     'completions:Emit shell completions'
   )
+  opts=(
+    '--help:Show usage'
+    '--version:Show version and build'
+  )
   if (( CURRENT == 2 )); then
     _describe -t commands 'quarry command' cmds
+    _describe -t options 'quarry option' opts
     return
   fi
   case "${words[2]}" in
@@ -257,7 +264,7 @@ _quarry() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   sub="${COMP_WORDS[1]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "ls rm rename fzf completions" -- "$cur") )
+    COMPREPLY=( $(compgen -W "ls rm rename fzf completions --help --version" -- "$cur") )
     return
   fi
   case "$sub" in
