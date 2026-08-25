@@ -1,6 +1,7 @@
 # Python build artifacts
 __pycache__/
 *.pyc
+src/build_stamp.py
 
 # IDE / local tooling
 .idea/

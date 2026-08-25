@@ -30,6 +30,17 @@ import cmd_ls  # noqa: E402
 import cmd_rename  # noqa: E402
 import cmd_rm  # noqa: E402
 
+
+# Which commit this copy of quarry was installed from, pinned by `make stamp`
+# (see the Makefile). Absent when installed some other way, in which case
+# --version reports the bare version number.
+try:
+    import build_stamp  # noqa: E402
+
+    BUILD = f"{build_stamp.DATE}, {build_stamp.COMMIT}"
+except ImportError:
+    BUILD = None
+
 USAGE = f"""\
 quarry — dig through your AI coding-assistant session history.
 
@@ -93,7 +104,7 @@ def main(argv: list[str]) -> int:
         sys.stdout.write(USAGE)
         return 0
     if argv[0] in ("-V", "--version"):
-        print(f"quarry {__version__}")
+        print(f"quarry {__version__}" + (f" ({BUILD})" if BUILD else ""))
         print(DISCLAIMER)
         return 0
 
