@@ -30,10 +30,14 @@ PYTHON  ?= python3
 # `quarry --version` can report it without shelling out to git.
 STAMP   ?= $(abspath src/build_stamp.py)
 
+# Which field `make release` advances: major, minor or patch.
+BUMP    ?= minor
+BUMPER  := $(abspath tools/bump_version.py)
+
 .DEFAULT_GOAL := help
 
 .PHONY: help install uninstall install-completions install-config test stamp \
-        install-fish install-zsh install-bash
+        release install-fish install-zsh install-bash
 
 help:
 	@echo "quarry — make targets:"
@@ -42,6 +46,8 @@ help:
 	@echo "  install-config        drop a starter config (won't clobber existing)"
 	@echo "  test                  run the unit test suite"
 	@echo "  stamp                 re-pin the commit that --version reports"
+	@echo "  release               bump the version, commit it and tag it"
+	@echo "                        (BUMP=major|minor|patch, default $(BUMP))"
 	@echo "  uninstall             remove the symlink and completion files"
 	@echo ""
 	@echo "Dirs (override on the command line): PREFIX=$(PREFIX)"
@@ -63,6 +69,25 @@ stamp:
 	else \
 	  echo "stamp: not a git checkout — skipped; --version reports the version only"; \
 	fi
+
+# Cut a release: advance the version constant, commit that one line, tag it.
+#   make release              0.1.0 -> 0.2.0
+#   make release BUMP=major   0.1.0 -> 1.0.0
+#   make release BUMP=patch   0.1.0 -> 0.1.1
+# Nothing is pushed — publishing the tag stays a deliberate, separate step,
+# since a tag other people have fetched is not reasonably retractable.
+release:
+	@test -z "$$(git -C "$(CURDIR)" status --porcelain)" \
+	  || { echo "release: working tree is dirty — commit or stash first" >&2; exit 1; }
+	@new="$$($(PYTHON) "$(BUMPER)" $(BUMP) --file "$(QUARRY)" --print)" || exit 1; \
+	if git -C "$(CURDIR)" rev-parse -q --verify "refs/tags/v$$new" >/dev/null; then \
+	  echo "release: tag v$$new already exists" >&2; exit 1; \
+	fi; \
+	$(PYTHON) "$(BUMPER)" $(BUMP) --file "$(QUARRY)" >/dev/null \
+	  && git -C "$(CURDIR)" commit -q -m "version: $$new" -- "$(QUARRY)" \
+	  && git -C "$(CURDIR)" tag -a "v$$new" -m "quarry $$new" \
+	  && echo "release: committed and tagged v$$new" \
+	  && echo "         publish with: git push --follow-tags"
 
 install: stamp
 	@mkdir -p "$(BINDIR)"

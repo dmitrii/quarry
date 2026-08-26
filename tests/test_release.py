@@ -1,0 +1,130 @@
+# PURPOSE: Tests the version arithmetic behind `make release` and the target
+# itself — that it bumps the constant, commits, tags, refuses to run on a dirty
+# tree or over an existing tag, and never pushes.
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+import bump_version  # noqa: E402
+
+IGNORED = shutil.ignore_patterns(".git", "__pycache__", "build_stamp.py")
+
+
+def git(repo: Path, *args: str) -> str:
+    out = subprocess.run(["git", "-C", str(repo), *args],
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def scratch_repo(dest: Path) -> Path:
+    """A throwaway clone-alike of the working tree, safe to commit and tag in."""
+    shutil.copytree(ROOT, dest, ignore=IGNORED)
+    git(dest, "init", "-q", "-b", "main")
+    git(dest, "config", "user.email", "test@example.com")
+    git(dest, "config", "user.name", "Test")
+    git(dest, "add", "-A")
+    git(dest, "commit", "-q", "-m", "initial")
+    return dest
+
+
+def make_release(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["make", "release", *args],
+                          cwd=repo, capture_output=True, text=True)
+
+
+def version_in(repo: Path) -> str:
+    return bump_version.read_version(repo / "bin" / "quarry")
+
+
+class ArithmeticTest(unittest.TestCase):
+    def test_minor_is_the_default_and_resets_patch(self):
+        self.assertEqual(bump_version.next_version("0.1.0", "minor"), "0.2.0")
+        self.assertEqual(bump_version.next_version("0.1.4", "minor"), "0.2.0")
+
+    def test_major_resets_minor_and_patch(self):
+        self.assertEqual(bump_version.next_version("0.1.0", "major"), "1.0.0")
+        self.assertEqual(bump_version.next_version("1.2.3", "major"), "2.0.0")
+
+    def test_patch_increments_only_the_last_field(self):
+        self.assertEqual(bump_version.next_version("0.1.0", "patch"), "0.1.1")
+        self.assertEqual(bump_version.next_version("1.2.9", "patch"), "1.2.10")
+
+    def test_rejects_an_unknown_bump(self):
+        with self.assertRaises(ValueError):
+            bump_version.next_version("0.1.0", "sideways")
+
+    def test_rejects_an_unparseable_version(self):
+        with self.assertRaises(ValueError):
+            bump_version.next_version("0.1", "minor")
+
+
+class ReleaseTargetTest(unittest.TestCase):
+    def test_bumps_commits_and_tags(self):
+        with TemporaryDirectory() as tmp:
+            repo = scratch_repo(Path(tmp) / "quarry")
+            out = make_release(repo)
+
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(version_in(repo), "0.2.0")
+            self.assertEqual(git(repo, "tag", "--list"), "v0.2.0")
+            self.assertEqual(git(repo, "log", "-1", "--format=%s"), "version: 0.2.0")
+            # The bump is the only thing in the commit.
+            self.assertEqual(git(repo, "show", "--name-only", "--format=", "HEAD"),
+                             "bin/quarry")
+
+        self.assertIn("git push --follow-tags", out.stdout)
+
+    def test_honors_an_explicit_bump(self):
+        with TemporaryDirectory() as tmp:
+            repo = scratch_repo(Path(tmp) / "quarry")
+            out = make_release(repo, "BUMP=major")
+
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(version_in(repo), "1.0.0")
+            self.assertEqual(git(repo, "tag", "--list"), "v1.0.0")
+
+    def test_refuses_a_dirty_tree(self):
+        with TemporaryDirectory() as tmp:
+            repo = scratch_repo(Path(tmp) / "quarry")
+            (repo / "README.md").write_text("scribble\n", encoding="utf-8")
+
+            out = make_release(repo)
+
+            self.assertNotEqual(out.returncode, 0)
+            self.assertIn("dirty", out.stderr)
+            self.assertEqual(version_in(repo), "0.1.0")
+            self.assertEqual(git(repo, "tag", "--list"), "")
+
+    def test_refuses_when_the_tag_already_exists(self):
+        with TemporaryDirectory() as tmp:
+            repo = scratch_repo(Path(tmp) / "quarry")
+            git(repo, "tag", "v0.2.0")
+
+            out = make_release(repo)
+
+            self.assertNotEqual(out.returncode, 0)
+            self.assertIn("v0.2.0", out.stderr)
+            # Refused before touching the file.
+            self.assertEqual(version_in(repo), "0.1.0")
+
+    def test_rejects_a_bad_bump_without_changing_anything(self):
+        with TemporaryDirectory() as tmp:
+            repo = scratch_repo(Path(tmp) / "quarry")
+
+            out = make_release(repo, "BUMP=sideways")
+
+            self.assertNotEqual(out.returncode, 0)
+            self.assertEqual(version_in(repo), "0.1.0")
+            self.assertEqual(git(repo, "tag", "--list"), "")
+
+
+if __name__ == "__main__":
+    unittest.main()
