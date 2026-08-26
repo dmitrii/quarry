@@ -11,8 +11,11 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-ROOT = Path(__file__).resolve().parent.parent
+from support import ROOT, git, scratch_repo
+
 STAMP = "build_stamp.py"
+
+PINNED = 'DATE = "2019-04-02"\nCOMMIT = "abc1234"\nCOMMITS_SINCE_RELEASE = 0\n'
 
 
 def copy_tree(dest: Path) -> Path:
@@ -34,6 +37,10 @@ def run_version(quarry: Path) -> str:
     return out.stdout
 
 
+def write_stamp(quarry: Path, body: str) -> None:
+    (quarry.parent.parent / "src" / STAMP).write_text(body, encoding="utf-8")
+
+
 def head_of_repo() -> tuple[str, str]:
     out = subprocess.run(
         ["git", "-C", str(ROOT), "log", "-1", "--format=%cs %h"],
@@ -47,14 +54,53 @@ class VersionTest(unittest.TestCase):
     def test_reports_the_pinned_commit(self):
         with TemporaryDirectory() as tmp:
             quarry = copy_tree(Path(tmp))
-            (quarry.parent.parent / "src" / STAMP).write_text(
-                '# PURPOSE: test fixture.\nDATE = "2019-04-02"\nCOMMIT = "abc1234"\n',
-                encoding="utf-8",
-            )
+            write_stamp(quarry, "# PURPOSE: test fixture.\n" + PINNED)
 
             stdout = run_version(quarry)
 
         self.assertEqual(stdout, "quarry 0.1.0 (2019-04-02, abc1234)\n")
+
+    def test_counts_commits_made_since_the_release(self):
+        with TemporaryDirectory() as tmp:
+            quarry = copy_tree(Path(tmp))
+            write_stamp(quarry, PINNED.replace("RELEASE = 0", "RELEASE = 7"))
+
+            stdout = run_version(quarry)
+
+        self.assertEqual(stdout, "quarry 0.1.0+7 (2019-04-02, abc1234)\n")
+
+    def test_omits_the_count_on_a_release_commit(self):
+        with TemporaryDirectory() as tmp:
+            quarry = copy_tree(Path(tmp))
+            write_stamp(quarry, PINNED)
+
+            stdout = run_version(quarry)
+
+        self.assertNotIn("+", stdout)
+
+    def test_treats_an_incomplete_stamp_as_no_stamp(self):
+        """A stamp from an older install must degrade, not crash."""
+        with TemporaryDirectory() as tmp:
+            quarry = copy_tree(Path(tmp))
+            write_stamp(quarry, 'DATE = "2019-04-02"\n')
+
+            stdout = run_version(quarry)
+
+        self.assertRegex(stdout, r"^quarry \d+\.\d+\.\d+\n$")
+
+    def test_make_stamp_counts_commits_since_the_latest_tag(self):
+        with TemporaryDirectory() as tmp:
+            repo = scratch_repo(Path(tmp) / "quarry")
+            git(repo, "tag", "-a", "v0.1.0", "-m", "release")
+            git(repo, "commit", "-q", "--allow-empty", "-m", "after one")
+            git(repo, "commit", "-q", "--allow-empty", "-m", "after two")
+            target = Path(tmp) / STAMP
+
+            subprocess.run(["make", "stamp", f"STAMP={target}"], cwd=repo,
+                           capture_output=True, text=True, check=True)
+
+            self.assertIn("COMMITS_SINCE_RELEASE = 2",
+                          target.read_text(encoding="utf-8"))
 
     def test_falls_back_to_bare_version_without_a_stamp(self):
         with TemporaryDirectory() as tmp:
@@ -66,8 +112,7 @@ class VersionTest(unittest.TestCase):
         """A stamped copy must report its pin even with git off the PATH."""
         with TemporaryDirectory() as tmp:
             quarry = copy_tree(Path(tmp))
-            (quarry.parent.parent / "src" / STAMP).write_text(
-                'DATE = "2019-04-02"\nCOMMIT = "abc1234"\n', encoding="utf-8")
+            write_stamp(quarry, PINNED)
 
             out = subprocess.run(
                 [sys.executable, str(quarry), "--version"],

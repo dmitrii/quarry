@@ -32,14 +32,17 @@ import cmd_rm  # noqa: E402
 
 
 # Which commit this copy of quarry was installed from, pinned by `make stamp`
-# (see the Makefile). Absent when installed some other way, in which case
-# --version reports the bare version number.
+# (see the Makefile), plus how far past the last release that commit sits.
+# Absent or incomplete when installed some other way, in which case --version
+# reports the bare version number.
 try:
     import build_stamp  # noqa: E402
 
     BUILD = f"{build_stamp.DATE}, {build_stamp.COMMIT}"
-except ImportError:
+    COMMITS_AHEAD = build_stamp.COMMITS_SINCE_RELEASE
+except (ImportError, AttributeError):
     BUILD = None
+    COMMITS_AHEAD = 0
 
 USAGE = f"""\
 quarry — dig through your AI coding-assistant session history.
@@ -104,7 +107,8 @@ def main(argv: list[str]) -> int:
         sys.stdout.write(USAGE)
         return 0
     if argv[0] == "--version":
-        print(f"quarry {__version__}" + (f" ({BUILD})" if BUILD else ""))
+        version = f"{__version__}+{COMMITS_AHEAD}" if COMMITS_AHEAD else __version__
+        print(f"quarry {version}" + (f" ({BUILD})" if BUILD else ""))
         return 0
 
     cmd, rest = argv[0], argv[1:]
