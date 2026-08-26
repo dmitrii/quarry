@@ -72,6 +72,26 @@ class ReleaseTargetTest(unittest.TestCase):
             self.assertEqual(version_in(repo), "1.0.0")
             self.assertEqual(git(repo, "tag", "--list"), "v1.0.0")
 
+    def test_restamps_so_the_release_reports_no_distance(self):
+        """Otherwise --version keeps counting from the previous tag."""
+        with TemporaryDirectory() as tmp:
+            repo = scratch_repo(Path(tmp) / "quarry")
+            git(repo, "tag", "-a", "v0.1.0", "-m", "release")
+            git(repo, "commit", "-q", "--allow-empty", "-m", "after one")
+            git(repo, "commit", "-q", "--allow-empty", "-m", "after two")
+
+            out = make_release(repo)
+
+            self.assertEqual(out.returncode, 0, out.stderr)
+            stamp = (repo / "src" / "build_stamp.py").read_text(encoding="utf-8")
+            self.assertIn("COMMITS_SINCE_RELEASE = 0", stamp)
+
+            version = subprocess.run([sys.executable, str(repo / "bin" / "quarry"),
+                                      "--version"],
+                                     capture_output=True, text=True, check=True)
+
+        self.assertRegex(version.stdout, r"^quarry 0\.2\.0 \(")
+
     def test_refuses_a_dirty_tree(self):
         with TemporaryDirectory() as tmp:
             repo = scratch_repo(Path(tmp) / "quarry")

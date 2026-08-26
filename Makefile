@@ -98,6 +98,7 @@ release:
 	  && git -C "$(CURDIR)" tag -a "v$$new" -m "quarry $$new" \
 	  && echo "release: committed and tagged v$$new" \
 	  && echo "         publish with: git push --follow-tags"
+	@$(MAKE) --no-print-directory stamp
 
 install: stamp
 	@mkdir -p "$(BINDIR)"
