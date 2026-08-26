@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -87,6 +88,26 @@ class VersionTest(unittest.TestCase):
             stdout = run_version(quarry)
 
         self.assertRegex(stdout, r"^quarry \d+\.\d+\.\d+\n$")
+
+    def test_regenerating_the_stamp_defeats_cached_bytecode(self):
+        """Successive stamps share a size, so Python may reuse a stale .pyc."""
+        with TemporaryDirectory() as tmp:
+            repo = scratch_repo(Path(tmp) / "quarry")
+            git(repo, "tag", "-a", "v0.1.0", "-m", "release")
+            quarry = repo / "bin" / "quarry"
+            stamp = repo / "src" / STAMP
+
+            subprocess.run(["make", "stamp"], cwd=repo, capture_output=True, check=True)
+            was = stamp.stat().st_mtime
+            run_version(quarry)  # caches bytecode for the stamp
+
+            git(repo, "commit", "-q", "--allow-empty", "-m", "after one")
+            subprocess.run(["make", "stamp"], cwd=repo, capture_output=True, check=True)
+            os.utime(stamp, (was, was))  # force the mtime collision
+
+            stdout = run_version(quarry)
+
+        self.assertIn("+1", stdout)
 
     def test_make_stamp_counts_commits_since_the_latest_tag(self):
         with TemporaryDirectory() as tmp:

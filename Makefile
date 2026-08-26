@@ -34,6 +34,10 @@ STAMP   ?= $(abspath src/build_stamp.py)
 BUMP    ?= minor
 BUMPER  := $(abspath tools/bump_version.py)
 
+# Python invalidates cached bytecode on mtime and size, and two stamps differ
+# in neither, so a regenerated stamp can be masked by the previous one's .pyc.
+STAMP_PYC := $(dir $(STAMP))__pycache__/$(basename $(notdir $(STAMP))).*.pyc
+
 .DEFAULT_GOAL := help
 
 .PHONY: help install uninstall install-completions install-config test stamp \
@@ -75,6 +79,7 @@ stamp:
 	    since="no release tag yet"; \
 	  fi; \
 	  echo "COMMITS_SINCE_RELEASE = $$ahead" >> "$(STAMP)"; \
+	  rm -f $(STAMP_PYC); \
 	  echo "stamp: pinned $$(git -C "$(CURDIR)" log -1 --format='%h (%cs)') — $$since"; \
 	else \
 	  echo "stamp: not a git checkout — skipped; --version reports the version only"; \
