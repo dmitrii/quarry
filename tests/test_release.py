@@ -10,10 +10,17 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from support import ROOT, git, scratch_repo
+from support import ROOT, git, scratch_repo, shipped_version
 
 sys.path.insert(0, str(ROOT / "tools"))
 import bump_version  # noqa: E402
+
+# What the target should produce from wherever the version currently stands.
+# Computed rather than named, so a release does not break these tests; the
+# arithmetic itself is pinned against literals by ArithmeticTest below.
+CURRENT = shipped_version()
+NEXT_MINOR = bump_version.next_version(CURRENT, "minor")
+NEXT_MAJOR = bump_version.next_version(CURRENT, "major")
 
 
 def make_release(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -54,9 +61,10 @@ class ReleaseTargetTest(unittest.TestCase):
             out = make_release(repo)
 
             self.assertEqual(out.returncode, 0, out.stderr)
-            self.assertEqual(version_in(repo), "0.2.0")
-            self.assertEqual(git(repo, "tag", "--list"), "v0.2.0")
-            self.assertEqual(git(repo, "log", "-1", "--format=%s"), "version: 0.2.0")
+            self.assertEqual(version_in(repo), NEXT_MINOR)
+            self.assertEqual(git(repo, "tag", "--list"), f"v{NEXT_MINOR}")
+            self.assertEqual(git(repo, "log", "-1", "--format=%s"),
+                             f"version: {NEXT_MINOR}")
             # The bump is the only thing in the commit.
             self.assertEqual(git(repo, "show", "--name-only", "--format=", "HEAD"),
                              "bin/quarry")
@@ -69,14 +77,14 @@ class ReleaseTargetTest(unittest.TestCase):
             out = make_release(repo, "BUMP=major")
 
             self.assertEqual(out.returncode, 0, out.stderr)
-            self.assertEqual(version_in(repo), "1.0.0")
-            self.assertEqual(git(repo, "tag", "--list"), "v1.0.0")
+            self.assertEqual(version_in(repo), NEXT_MAJOR)
+            self.assertEqual(git(repo, "tag", "--list"), f"v{NEXT_MAJOR}")
 
     def test_restamps_so_the_release_reports_no_distance(self):
         """Otherwise --version keeps counting from the previous tag."""
         with TemporaryDirectory() as tmp:
             repo = scratch_repo(Path(tmp) / "quarry")
-            git(repo, "tag", "-a", "v0.1.0", "-m", "release")
+            git(repo, "tag", "-a", "v0.0.1", "-m", "an earlier release")
             git(repo, "commit", "-q", "--allow-empty", "-m", "after one")
             git(repo, "commit", "-q", "--allow-empty", "-m", "after two")
 
@@ -90,7 +98,8 @@ class ReleaseTargetTest(unittest.TestCase):
                                       "--version"],
                                      capture_output=True, text=True, check=True)
 
-        self.assertRegex(version.stdout, r"^quarry 0\.2\.0 \(")
+        self.assertTrue(version.stdout.startswith(f"quarry {NEXT_MINOR} ("),
+                        version.stdout)
 
     def test_refuses_a_dirty_tree(self):
         with TemporaryDirectory() as tmp:
@@ -101,20 +110,20 @@ class ReleaseTargetTest(unittest.TestCase):
 
             self.assertNotEqual(out.returncode, 0)
             self.assertIn("dirty", out.stderr)
-            self.assertEqual(version_in(repo), "0.1.0")
+            self.assertEqual(version_in(repo), CURRENT)
             self.assertEqual(git(repo, "tag", "--list"), "")
 
     def test_refuses_when_the_tag_already_exists(self):
         with TemporaryDirectory() as tmp:
             repo = scratch_repo(Path(tmp) / "quarry")
-            git(repo, "tag", "v0.2.0")
+            git(repo, "tag", f"v{NEXT_MINOR}")
 
             out = make_release(repo)
 
             self.assertNotEqual(out.returncode, 0)
-            self.assertIn("v0.2.0", out.stderr)
+            self.assertIn(f"v{NEXT_MINOR}", out.stderr)
             # Refused before touching the file.
-            self.assertEqual(version_in(repo), "0.1.0")
+            self.assertEqual(version_in(repo), CURRENT)
 
     def test_rejects_a_bad_bump_without_changing_anything(self):
         with TemporaryDirectory() as tmp:
@@ -123,7 +132,7 @@ class ReleaseTargetTest(unittest.TestCase):
             out = make_release(repo, "BUMP=sideways")
 
             self.assertNotEqual(out.returncode, 0)
-            self.assertEqual(version_in(repo), "0.1.0")
+            self.assertEqual(version_in(repo), CURRENT)
             self.assertEqual(git(repo, "tag", "--list"), "")
 
 

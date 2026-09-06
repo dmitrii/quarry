@@ -1,16 +1,31 @@
 # PURPOSE: Shared test helpers for building throwaway git repositories, so
 # tests that commit, tag or release can do so without touching the real
-# checkout. Not a test module itself.
+# checkout, and for reading the version those tests must not hardcode. Not a
+# test module itself.
 
 from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+QUARRY = ROOT / "bin" / "quarry"
+
+sys.path.insert(0, str(ROOT / "tools"))
+import bump_version  # noqa: E402
 
 IGNORED = shutil.ignore_patterns(".git", "__pycache__", "build_stamp.py")
+
+
+def shipped_version() -> str:
+    """The version bin/quarry currently declares.
+
+    Tests must derive their expectations from this rather than naming a
+    literal, because `make release` moves it.
+    """
+    return bump_version.read_version(QUARRY)
 
 
 def git(repo: Path, *args: str) -> str:

@@ -12,11 +12,13 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from support import ROOT, git, scratch_repo
+from support import ROOT, git, scratch_repo, shipped_version
 
 STAMP = "build_stamp.py"
 
 PINNED = 'DATE = "2019-04-02"\nCOMMIT = "abc1234"\nCOMMITS_SINCE_RELEASE = 0\n'
+
+VERSION = shipped_version()
 
 
 def copy_tree(dest: Path) -> Path:
@@ -59,7 +61,7 @@ class VersionTest(unittest.TestCase):
 
             stdout = run_version(quarry)
 
-        self.assertEqual(stdout, "quarry 0.1.0 (2019-04-02, abc1234)\n")
+        self.assertEqual(stdout, f"quarry {VERSION} (2019-04-02, abc1234)\n")
 
     def test_counts_commits_made_since_the_release(self):
         with TemporaryDirectory() as tmp:
@@ -68,7 +70,7 @@ class VersionTest(unittest.TestCase):
 
             stdout = run_version(quarry)
 
-        self.assertEqual(stdout, "quarry 0.1.0+7 (2019-04-02, abc1234)\n")
+        self.assertEqual(stdout, f"quarry {VERSION}+7 (2019-04-02, abc1234)\n")
 
     def test_omits_the_count_on_a_release_commit(self):
         with TemporaryDirectory() as tmp:
@@ -141,7 +143,7 @@ class VersionTest(unittest.TestCase):
                 env={"PATH": "/nonexistent", "HOME": tmp},
             )
 
-        self.assertEqual(out.stdout, "quarry 0.1.0 (2019-04-02, abc1234)\n")
+        self.assertEqual(out.stdout, f"quarry {VERSION} (2019-04-02, abc1234)\n")
         self.assertEqual(out.stderr.strip(), "")
 
     def test_rejects_a_short_version_flag(self):
