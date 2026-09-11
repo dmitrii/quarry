@@ -5,7 +5,8 @@ Proposes a title per session from a template (default: reuse the AI title, else
 generate one), shows the session's detail, and lets you accept, edit, or skip
 before writing. With no selector it targets the last session run in the current
 directory (like `quarry rm`). Titles are written the way `/rename` writes them:
-a custom-title record appended to the session's transcript.
+custom-title and agent-name records appended to the session's transcript (the
+resume picker reads the former, the in-session badge the latter).
 """
 
 from __future__ import annotations

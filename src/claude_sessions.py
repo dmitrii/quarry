@@ -780,8 +780,10 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
 
 
 def set_custom_title(session: Session, title: str) -> None:
-    """Append a custom-title record at the transcript tail (matches /rename),
-    then verify our parser reads it back. Raises on bad input or format drift."""
+    """Append custom-title and agent-name records at the transcript tail
+    (matches /rename, which writes both — the in-session badge reads the last
+    agent-name record), then verify our parser reads the title back. Raises on
+    bad input or format drift."""
     title = title.strip()
     if not title:
         raise ValueError("title is empty")
@@ -792,12 +794,14 @@ def set_custom_title(session: Session, title: str) -> None:
     if session.path is None or not session.path.exists():
         raise RuntimeError(f"transcript not found for {session.uuid}")
 
-    record = json.dumps({"type": "custom-title", "customTitle": title,
-                         "sessionId": session.uuid})
+    records = "".join(json.dumps(r) + "\n" for r in (
+        {"type": "custom-title", "customTitle": title, "sessionId": session.uuid},
+        {"type": "agent-name", "agentName": title, "sessionId": session.uuid},
+    ))
     data = session.path.read_bytes()
     prefix = b"" if (not data or data.endswith(b"\n")) else b"\n"
     with session.path.open("ab") as fh:
-        fh.write(prefix + record.encode("utf-8") + b"\n")
+        fh.write(prefix + records.encode("utf-8"))
 
     reloaded = load_session(session.path)
     if reloaded is None or reloaded.title != title:

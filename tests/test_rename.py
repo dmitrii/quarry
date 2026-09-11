@@ -191,6 +191,10 @@ class SetCustomTitleTests(unittest.TestCase):
             s = self._session(td)
             cs.set_custom_title(s, "my-title")
             self.assertEqual(cs.load_session(s.path).title, "my-title")
+            last = s.path.read_text(encoding="utf-8").splitlines()[-1]
+            self.assertEqual(json.loads(last),
+                             {"type": "agent-name", "agentName": "my-title",
+                              "sessionId": s.uuid})
 
     def test_rejects_empty_title(self):
         with TemporaryDirectory() as td:
